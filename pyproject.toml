@@ -3,7 +3,7 @@ name = "aaramse-rewrite"
 version = "0.1.0"
 description = "Monotone pragmatic rewrite calculus for over-refusal repair (AARAMSE rewrite stage)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["litellm>=1.99"]
 
 [project.scripts]
 aaramse = "aaramse.__main__:main"
