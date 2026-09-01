@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Dict
 
 import pytest
-
 from aaramse.certification import ContrastivePair
 from aaramse.client import OllamaClient
 from aaramse.gateway import Gateway, GatewayConfig

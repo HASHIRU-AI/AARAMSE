@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from aaramse.corpus import BENIGN_OVERREFUSALS, SEED_PAIRS
 from aaramse.invariants import ActionabilityScorer, strip_frame, topic_core
 from aaramse.types import OperatorApplication, RewriteProgram

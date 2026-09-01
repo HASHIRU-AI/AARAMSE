@@ -16,10 +16,10 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
+from .equivalence import SemanticEquivalence
 from .invariants import ActionabilityScorer, IntentGuard
 from .localize import Localization, localize_mrtf
 from .operators.base import RewriteOperator, register_operator
-from .rewriter import SemanticEquivalence
 from .types import OperatorApplication, OperatorKind, RewriteProgram
 
 __all__ = ["FRAGMENT_INSTRUCTION", "TargetedConfig", "TargetedRepair"]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from aaramse.falsereject import load_benign, load_toxic
 from aaramse.judge import JUDGE_PROMPT, ResponseClass, ThreeWayJudge
 

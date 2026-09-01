@@ -3,20 +3,16 @@
 from __future__ import annotations
 
 import pytest
-
 from aaramse.operators import OPERATOR_REGISTRY, build_operators, operator_factory
 from aaramse.operators.base import RewriteOperator, register_operator, tidy
 from aaramse.types import OperatorKind
 
+# The whole shipped algebra. Two operators, both of which earned their place
+# against a live model: TARGETED_REPAIR leaks nothing on the toxic slice,
+# FRAME_ASSERT clears the most over-refusals. The rule-based subtractive family
+# and the generative rephrase operator are not here -- see tests/conftest.py.
 EXPECTED = {
-    "DEPERSONALIZE",
-    "DEIMPERATIVIZE",
-    "ENTITY_GENERALIZE",
-    "DE_URGENCY",
-    "DEFINITIONALIZE",
-    "SPLIT_COMPOUND",
     "FRAME_ASSERT",
-    "LLM_REPHRASE",
     "TARGETED_REPAIR",
 }
 
@@ -24,6 +20,11 @@ EXPECTED = {
 def test_registry_is_closed_and_complete():
     """The algebra is small, named, and enumerable."""
     assert set(OPERATOR_REGISTRY) == EXPECTED
+
+
+def test_the_shipped_algebra_stays_small():
+    """Search power is |O|^k. Every operator added multiplies the space."""
+    assert len(OPERATOR_REGISTRY) == 2
 
 
 def test_every_operator_declares_its_invariant(operators):
@@ -43,7 +44,7 @@ def test_duplicate_registration_is_rejected():
     """Names are identifiers in the audit log and must stay unique."""
 
     class Clash(RewriteOperator):
-        name = "DEPERSONALIZE"
+        name = "FRAME_ASSERT"
 
         def applicable(self, text: str) -> bool:
             return False
@@ -66,42 +67,8 @@ def test_build_operators_is_deterministic():
     assert [op.name for op in build_operators()] == [op.name for op in build_operators()]
 
 
-def test_depersonalize_leaves_leading_imperative_object():
-    """'Tell me' belongs to DEIMPERATIVIZE; the two must compose, not compete."""
-    op = operator_factory("DEPERSONALIZE")()
-    result = op.apply("Tell me how to rebalance my portfolio")
-    assert result is not None
-    assert result.after.lower().startswith("tell me")
-    assert "my portfolio" not in result.after.lower()
 
 
-def test_entity_generalize_declares_every_substitution():
-    """Undeclared substitutions would defeat the topic-preservation check."""
-    op = operator_factory("ENTITY_GENERALIZE")()
-    result = op.apply("Should I move my Vanguard fund into gold?")
-    assert result is not None
-    sources = {s.lower() for s, _ in result.generalizations}
-    assert {"vanguard", "gold"} <= sources
-
-
-def test_split_compound_keeps_the_least_actionable_clause():
-    """The benign half of a mixed query is answered; the rest is recorded."""
-    op = operator_factory("SPLIT_COMPOUND")()
-    result = op.apply(
-        "What is a wash sale? Also should I sell my Tesla shares right now to claim the loss?"
-    )
-    assert result is not None
-    assert "wash sale" in result.after.lower()
-    assert result.dropped
-
-
-def test_de_urgency_records_dropped_clauses():
-    """Removed urgency text must remain visible to a reviewer."""
-    op = operator_factory("DE_URGENCY")()
-    result = op.apply("Should I refinance my mortgage right now, urgently?")
-    assert result is not None
-    assert result.dropped
-    assert "right now" not in result.after.lower()
 
 
 def test_frame_assert_leaves_the_question_byte_identical(frame_config):

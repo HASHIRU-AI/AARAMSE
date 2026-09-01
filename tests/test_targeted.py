@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from aaramse.rewriter import SemanticEquivalence
+from aaramse.equivalence import SemanticEquivalence
 from aaramse.targeted import TargetedConfig, TargetedRepair
 
 PROMPT = (

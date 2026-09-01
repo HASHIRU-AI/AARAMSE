@@ -92,10 +92,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_gateway_options(serve_cmd)
     serve_cmd.add_argument("--host", default=_env("AARAMSE_HOST", "0.0.0.0"))
     serve_cmd.add_argument("--port", type=int, default=int(_env("AARAMSE_PORT", "8080")))
-    serve_cmd.add_argument(
-        "--public-url", default=_env("AARAMSE_PUBLIC_URL", ""),
-        help="Externally reachable URL, advertised on the A2A agent card.",
-    )
 
     repair_cmd = subcommands.add_parser(
         "repair", parents=[common], help="Repair one query and print the result."
@@ -138,7 +134,6 @@ def _serve(args: argparse.Namespace) -> int:
         )
     server = serve(
         _gateway(args), host=args.host, port=args.port,
-        public_url=args.public_url,
     )
 
     def stop(signum: int, frame: Optional[FrameType]) -> None:

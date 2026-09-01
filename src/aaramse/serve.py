@@ -28,13 +28,6 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple, Type
 
-from .a2a import (
-    A2A_PATH,
-    AGENT_CARD_PATH,
-    PARSE_ERROR,
-    agent_card,
-    handle_jsonrpc,
-)
 from .client import ModelUnavailable
 from .gateway import Gateway
 
@@ -74,13 +67,11 @@ class GatewayService:
         gateway: The configured repair layer.
         token: Bearer token required on every non-health request. None means
             the service is unauthenticated, which is logged as a warning.
-        public_url: Externally reachable URL, advertised on the agent card.
         lock: Serialises handling so the audit chain cannot interleave.
     """
 
     gateway: Gateway
     token: Optional[str] = None
-    public_url: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
@@ -114,19 +105,12 @@ class GatewayService:
         route = path.rstrip("/") or "/"
         if method == "GET" and route in ("/healthz", "/"):
             return _json(200, {"status": "ok", "model": self.gateway.config.model})
-        # The agent card is discovery metadata and carries no user data, so it
-        # sits outside the token like the health route.
-        if method == "GET" and route == AGENT_CARD_PATH:
-            return _json(200, agent_card(self.gateway.config.model, self.public_url))
-
         if not self.authorised(auth):
             return _json(401, {"error": "unauthorized"})
 
         try:
             if method == "POST" and route == "/v1/repair":
                 return self._repair(body)
-            if method == "POST" and route == A2A_PATH:
-                return self._a2a(body)
             if method == "GET" and route == "/v1/report":
                 with self.lock:
                     return _json(200, self.gateway.intervention_report().to_dict())
@@ -172,29 +156,6 @@ class GatewayService:
             "reason": result.reason,
         })
 
-
-    def _a2a(self, body: bytes) -> Response:
-        """Handle one A2A JSON-RPC request.
-
-        Protocol problems come back as JSON-RPC errors with HTTP 200, which is
-        what an A2A client parses; only transport-level problems are HTTP
-        errors.
-        """
-        if len(body) > MAX_BODY_BYTES:
-            return _json(413, {"error": "request body too large"})
-        try:
-            payload = json.loads(body or b"{}")
-        except json.JSONDecodeError:
-            return _json(200, {
-                "jsonrpc": "2.0", "id": None,
-                "error": {"code": PARSE_ERROR, "message": "body is not valid JSON"},
-            })
-
-        def repair(query: str):
-            with self.lock:
-                return self.gateway.handle(query)
-
-        return _json(200, handle_jsonrpc(repair, payload))
 
 
 def build_handler(service: GatewayService) -> Type[BaseHTTPRequestHandler]:
@@ -247,7 +208,6 @@ def serve(
     host: str = "0.0.0.0",
     port: int = 8080,
     token: Optional[str] = None,
-    public_url: str = "",
 ) -> ThreadingHTTPServer:
     """Build and start an HTTP server in the background.
 
@@ -256,7 +216,6 @@ def serve(
         host: Interface to bind.
         port: Port to bind; 0 selects a free one.
         token: Bearer token to require. Falls back to `AARAMSE_API_TOKEN`.
-        public_url: Externally reachable URL, advertised on the A2A agent card.
 
     Returns:
         The running server. Call `shutdown()` to stop it.
@@ -264,7 +223,6 @@ def serve(
     service = GatewayService(
         gateway=gateway,
         token=token or os.environ.get(TOKEN_ENV) or None,
-        public_url=public_url,
     )
     server = ThreadingHTTPServer((host, port), build_handler(service))
     thread = threading.Thread(target=server.serve_forever, daemon=True)

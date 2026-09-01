@@ -9,7 +9,6 @@ and it breaks the passthrough guarantee the whole design rests on.
 from __future__ import annotations
 
 import pytest
-
 from aaramse.budget import LeakageBudget
 from aaramse.finqa import ControlPrompt, load_control, source_note
 from aaramse.types import Decision

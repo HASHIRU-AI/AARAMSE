@@ -3,9 +3,12 @@
 Importing this package registers every operator. The registry is deliberately
 small and enumerable: with |O| operators and search depth k, the layer's total
 optimization power is at most |O|^k candidates, all of them inspectable.
+
+The MVP registry holds exactly two operators. The rule-based subtractive family
+produced 2 of 23 repairs in the judged evaluation and the generative rephrase
+operator was never wired into the gateway, so neither ships here.
 """
 
-from ..rewriter import LLMRephrase, RewriterConfig, SemanticEquivalence
 from ..targeted import TargetedConfig, TargetedRepair
 from .additive import FrameAssert, FrameConfig
 from .base import (
@@ -16,29 +19,12 @@ from .base import (
     register_operator,
     tidy,
 )
-from .subtractive import (
-    Definitionalize,
-    Deimperativize,
-    Depersonalize,
-    DeUrgency,
-    EntityGeneralize,
-    SplitCompound,
-)
 
 __all__ = [
     "OPERATOR_REGISTRY",
-    "DeUrgency",
-    "Definitionalize",
-    "Deimperativize",
-    "Depersonalize",
-    "EntityGeneralize",
     "FrameAssert",
     "FrameConfig",
-    "LLMRephrase",
     "RewriteOperator",
-    "RewriterConfig",
-    "SemanticEquivalence",
-    "SplitCompound",
     "TargetedConfig",
     "TargetedRepair",
     "build_operators",

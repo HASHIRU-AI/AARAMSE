@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from aaramse.splits import assert_disjoint, split_digest, split_items
 
 PROMPTS = tuple(f"prompt number {i}" for i in range(200))

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from aaramse.__main__ import build_parser, main
 
 

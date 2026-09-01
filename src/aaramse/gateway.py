@@ -17,13 +17,13 @@ from .audit import AuditLog
 from .budget import BudgetVerdict, LeakageBudget, measure_leakage
 from .certification import Certificate, ContrastivePair, admit_certified, certify_all
 from .client import ModelClient
+from .equivalence import SemanticEquivalence
 from .judge import ResponseClass, ThreeWayJudge
 from .operators import FrameAssert, FrameConfig
 from .operators.base import RewriteOperator
 from .providers import build_client
 from .refusal import ResponseVerdict, delivers_procedure
 from .report import InterventionReport, build_report
-from .rewriter import SemanticEquivalence
 from .search import RepairSearch, SearchConfig
 from .targeted import TargetedConfig, TargetedRepair
 from .types import RepairResult
