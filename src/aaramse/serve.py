@@ -24,12 +24,14 @@ import json
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple, Type
 
 from .client import ModelUnavailable
 from .gateway import Gateway
+from .ui import JobStore, baseline_of, console_html, trace_of
 
 __all__ = [
     "MAX_BODY_BYTES",
@@ -39,6 +41,8 @@ __all__ = [
     "serve",
 ]
 
+CONSOLE_PATHS = ("/", "/console")
+
 logger = logging.getLogger(__name__)
 
 # A query is a sentence, not a payload. Anything larger is a mistake or an abuse.
@@ -47,6 +51,11 @@ MAX_BODY_BYTES = 64 * 1024
 TOKEN_ENV = "AARAMSE_API_TOKEN"
 
 Response = Tuple[int, str, bytes]
+
+
+def _html(status: int, payload: bytes) -> Response:
+    """Encode an HTML response."""
+    return status, "text/html; charset=utf-8", payload
 
 
 def _json(status: int, payload: Dict[str, Any]) -> Response:
@@ -68,11 +77,14 @@ class GatewayService:
         token: Bearer token required on every non-health request. None means
             the service is unauthenticated, which is logged as a warning.
         lock: Serialises handling so the audit chain cannot interleave.
+        jobs: Background work the console polls on, because a repair can take
+            minutes and does not fit behind a synchronous request.
     """
 
     gateway: Gateway
     token: Optional[str] = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    jobs: JobStore = field(default_factory=JobStore)
 
     def __post_init__(self) -> None:
         if not self.token:
@@ -103,14 +115,35 @@ class GatewayService:
             Status, content type, and encoded body.
         """
         route = path.rstrip("/") or "/"
-        if method == "GET" and route in ("/healthz", "/"):
+        if method == "GET" and route == "/healthz":
             return _json(200, {"status": "ok", "model": self.gateway.config.model})
+        # The console is a static page carrying no user data, so it sits
+        # outside the token like the health route. Everything it calls does not.
+        if method == "GET" and route in CONSOLE_PATHS:
+            return _html(200, console_html())
         if not self.authorised(auth):
             return _json(401, {"error": "unauthorized"})
 
         try:
             if method == "POST" and route == "/v1/repair":
                 return self._repair(body)
+            if method == "POST" and route == "/v1/chat":
+                return self._chat_start(body)
+            if method == "GET" and route.startswith("/v1/chat/"):
+                return self._chat_poll(route.rsplit("/", 1)[-1])
+            if method == "GET" and route == "/v1/config":
+                return _json(200, {
+                    "model": self.gateway.config.model,
+                    "deployer_name": self.gateway.config.deployer_name,
+                    "authorisation_ref": self.gateway.config.authorisation_ref,
+                    "system_prompt": self.gateway.config.system_prompt,
+                    "operators": [op.name for op in self.gateway.operators],
+                    "certificates": {
+                        name: cert.to_dict()
+                        for name, cert in self.gateway.certificates.items()
+                    },
+                    "authenticated": self.token is not None,
+                })
             if method == "GET" and route == "/v1/report":
                 with self.lock:
                     return _json(200, self.gateway.intervention_report().to_dict())
@@ -156,6 +189,63 @@ class GatewayService:
             "reason": result.reason,
         })
 
+
+
+    def _chat_start(self, body: bytes) -> Response:
+        """Accept one chat turn and hand back a job to poll.
+
+        A repair runs 23-26 model calls. Holding the socket open for that is
+        what the deployment notes say not to do, so the work goes on a thread
+        and the caller polls.
+        """
+        if len(body) > MAX_BODY_BYTES:
+            return _json(413, {"error": "request body too large"})
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "body is not valid JSON"})
+        if not isinstance(payload, dict):
+            return _json(400, {"error": "body must be a JSON object"})
+
+        query = payload.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return _json(400, {"error": "'query' must be a non-empty string"})
+
+        started = time.monotonic()
+        calls_at_start = self.gateway.client.calls
+
+        def work() -> Dict[str, Any]:
+            with self.lock:
+                result = self.gateway.handle(query)
+                probe = self.gateway.probe
+                # The reply the user receives is the one the search accepted,
+                # which is the generation for whatever prompt actually ran.
+                answer = getattr(probe, "answers", {}).get(result.rewritten, "")
+                records = list(self.gateway.audit.read())
+                audit = {
+                    "index": len(records) - 1,
+                    "hash": records[-1]["hash"] if records else "",
+                    "prev_hash": records[-1]["prev_hash"] if records else "",
+                    "chain_ok": self.gateway.audit.verify() is None,
+                } if records else {}
+                return trace_of(
+                    result,
+                    answer=answer,
+                    baseline=baseline_of(probe, query),
+                    audit=audit,
+                    elapsed_s=time.monotonic() - started,
+                    model_calls=self.gateway.client.calls - calls_at_start,
+                )
+
+        job = self.jobs.start("chat", query, work, calls_at_start=calls_at_start)
+        return _json(202, job.snapshot(self.gateway.client.calls))
+
+    def _chat_poll(self, job_id: str) -> Response:
+        """Report a job's progress, or its result once it has one."""
+        job = self.jobs.get(job_id)
+        if job is None:
+            return _json(404, {"error": "unknown job", "id": job_id})
+        return _json(200, job.snapshot(self.gateway.client.calls))
 
 
 def build_handler(service: GatewayService) -> Type[BaseHTTPRequestHandler]:
@@ -227,5 +317,9 @@ def serve(
     server = ThreadingHTTPServer((host, port), build_handler(service))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    logger.info("aaramse listening on %s:%s", host, server.server_address[1])
+    logger.info(
+        "aaramse listening on %s:%s -- console at http://%s:%s/",
+        host, server.server_address[1],
+        "localhost" if host in ("0.0.0.0", "") else host, server.server_address[1],
+    )
     return server

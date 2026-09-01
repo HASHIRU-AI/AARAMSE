@@ -15,7 +15,7 @@ services:
       AARAMSE_MODEL: ${AARAMSE_MODEL:-gemma4:12b}
       AARAMSE_DEPLOYER: ${AARAMSE_DEPLOYER:-Acme Wealth Ltd}
       AARAMSE_AUTHORISATION_REF: ${AARAMSE_AUTHORISATION_REF:-FRN-123456}
-      AARAMSE_PUBLIC_URL: ${AARAMSE_PUBLIC_URL:-http://localhost:8080/a2a}
+      AARAMSE_CLIENT_BACKEND: ${AARAMSE_CLIENT_BACKEND:-litellm}
       OLLAMA_HOST: http://ollama:11434
     volumes:
       # The hash chain must outlive the container.

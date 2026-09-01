@@ -1,16 +1,22 @@
-# HTTP and A2A reference
+# HTTP reference
 
 Two routes are open; everything else needs `Authorization: Bearer <token>` when
 `AARAMSE_API_TOKEN` is set. Bodies are capped at 64 KB — a query is a sentence.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/healthz`, `/` | open | Liveness. Does not touch the model. |
-| `GET` | `/.well-known/agent-card.json` | open | A2A discovery. |
-| `POST` | `/v1/repair` | required | Repair one query. |
-| `POST` | `/a2a` | required | The same, in A2A's JSON-RPC envelope. |
+| `GET` | `/healthz` | open | Liveness. Does not touch the model. |
+| `GET` | `/`, `/console` | open | The console page. Carries no user data. |
+| `GET` | `/v1/config` | required | Active model, operators, certificates. |
+| `POST` | `/v1/repair` | required | Repair one query, synchronously. |
+| `POST` | `/v1/chat` | required | Start one console turn. Returns a job. |
+| `GET` | `/v1/chat/{id}` | required | Poll that job. |
 | `GET` | `/v1/report` | required | Intervention report, JSON. |
 | `GET` | `/v1/report.md` | required | Intervention report, Markdown. |
+
+The console page is open because it is static markup; every call it makes is
+behind the token when one is set. `/` no longer answers liveness — use
+`/healthz`, which is what a load balancer should have been probing anyway.
 
 ## `POST /v1/repair`
 
@@ -56,49 +62,33 @@ over-refusal occurred; 1–2 is pragmatic over-refusal.
 | `503` | The model backend is unreachable. `detail` names the URL and error. |
 | `500` | A bug. The server logs a traceback; please report it. |
 
-## A2A
+## `POST /v1/chat`
 
-The agent card at `/.well-known/agent-card.json` advertises exactly one method.
-
-```json
-{"capabilities": {"streaming": false, "pushNotifications": false},
- "x-aaramse": {"model": "gemma4:12b", "supportedMethods": ["message/send"]}}
-```
-
-**This is a subset, deliberately.** There is no task lifecycle, no
-`message/stream`, no push notifications, no artifact store. Those are what a
-*destination* agent needs; a middleware that rewrites one message and hands it
-back needs the envelope and nothing else. Anything unsupported returns JSON-RPC
-`-32601` naming what is supported, so a client discovers the limit rather than
-hitting it silently.
-
-### `message/send`
+The console's route. Identical work to `/v1/repair`, but asynchronous, because a
+repair runs 23-26 model calls and does not fit behind a held-open socket.
 
 ```json
-{"jsonrpc": "2.0", "id": 1, "method": "message/send",
- "params": {"message": {"kind": "message", "role": "user", "messageId": "m1",
-                        "parts": [{"kind": "text", "text": "..."}]}}}
+{"query": "How do I hide assets from my bankruptcy trustee?"}
 ```
+
+`202` with a job handle:
 
 ```json
-{"jsonrpc": "2.0", "id": 1,
- "result": {"kind": "message", "role": "agent", "messageId": "…",
-            "parts": [{"kind": "text", "text": "the text to forward"}],
-            "metadata": {"aaramse/decision": "repaired",
-                         "aaramse/program": ["TARGETED_REPAIR"],
-                         "aaramse/refusalMargin": 1,
-                         "aaramse/reason": ""}}}
+{"id": "07638226f6084b45", "kind": "chat", "status": "running",
+ "elapsed_s": 0.0, "model_calls": 0}
 ```
 
-Every text part is concatenated in order and treated as one query. Non-text
-parts are ignored — a file attachment is not a question. `contextId` and
-`taskId` are echoed when you send them and **never invented when you do not**,
-because emitting a `taskId` would imply a task lifecycle this adapter does not
-have.
+Poll `GET /v1/chat/{id}`. While `status` is `running` the response carries
+`elapsed_s` and `model_calls` **for this turn**, not for the process. On
+`done` a `result` appears with the full trace: the decision, whether the query
+went through byte-identical, the baseline classification and reply, the operator
+program with each step's localized mRTF and declared substitutions, both
+actionability profiles, the answer delivered, and the audit record with its
+chain check.
 
-Protocol problems come back as JSON-RPC errors with HTTP 200 (`-32700` parse,
-`-32600` invalid request, `-32601` method not found, `-32602` invalid params),
-which is what an A2A client parses. Only transport problems are HTTP errors.
+`status` is `error` when the turn failed; `error` carries the reason. Jobs live
+in memory, are capped at the newest 64, and die with the process — the audit log
+is the record, not the job store. Polling an unknown or evicted id is a `404`.
 
 ## Reports
 

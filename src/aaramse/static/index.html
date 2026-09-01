@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AARAMSE Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#100e0c; --ink-2:#171512; --ink-3:#1f1c18; --rule:#2e2a24;
+  --bone:#e9e2d4; --bone-dim:#9a9285; --bone-faint:#635c51;
+  --amber:#e3a13c; --teal:#5fb2a4; --vermilion:#d9552f; --violet:#9b8bd0;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --serif:'Instrument Serif',Georgia,'Times New Roman',serif;
+  --pad:clamp(14px,2.2vw,26px);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--ink);color:var(--bone);
+  font-family:var(--mono);font-size:13.5px;line-height:1.6;
+  font-weight:300;-webkit-font-smoothing:antialiased;
+  display:flex;flex-direction:column;overflow:hidden;
+}
+/* Paper grain: this is a ledger, not a terminal. */
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.04;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+::selection{background:var(--amber);color:var(--ink)}
+
+/* ── masthead ─────────────────────────────────────────── */
+header{
+  display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;
+  padding:14px var(--pad);border-bottom:1px solid var(--rule);
+  background:linear-gradient(180deg,var(--ink-2),var(--ink));flex:none;
+}
+h1{
+  font-family:var(--serif);font-size:26px;font-weight:400;margin:0;
+  letter-spacing:.3px;line-height:1;
+}
+h1 em{font-style:italic;color:var(--amber)}
+.tagline{color:var(--bone-faint);font-size:11px;letter-spacing:.09em;text-transform:uppercase}
+.spacer{flex:1}
+.chip{
+  display:inline-flex;align-items:center;gap:7px;padding:4px 10px;
+  border:1px solid var(--rule);border-radius:2px;background:var(--ink-3);
+  font-size:11px;letter-spacing:.05em;color:var(--bone-dim);white-space:nowrap;
+}
+.chip b{color:var(--bone);font-weight:500}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--bone-faint);flex:none}
+.dot.live{background:var(--teal);box-shadow:0 0 0 0 var(--teal);animation:pulse 2.4s ease-out infinite}
+.dot.down{background:var(--vermilion)}
+@keyframes pulse{to{box-shadow:0 0 0 7px rgba(95,178,164,0)}}
+
+/* ── layout ───────────────────────────────────────────── */
+main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(340px,420px);min-height:0}
+#stream{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--rule)}
+#log{flex:1;overflow-y:auto;padding:var(--pad);scroll-behavior:smooth}
+#log::-webkit-scrollbar,#trace::-webkit-scrollbar{width:9px}
+#log::-webkit-scrollbar-thumb,#trace::-webkit-scrollbar-thumb{background:var(--rule);border-radius:0}
+
+/* ── opening card ─────────────────────────────────────── */
+.intro{max-width:56ch;margin:6vh auto;animation:rise .7s cubic-bezier(.2,.7,.3,1) both}
+.intro h2{font-family:var(--serif);font-size:34px;font-weight:400;line-height:1.15;margin:0 0 14px}
+.intro p{color:var(--bone-dim);margin:0 0 20px}
+.seeds{display:flex;flex-direction:column;gap:8px}
+.seed{
+  text-align:left;font:inherit;color:var(--bone-dim);cursor:pointer;
+  background:var(--ink-2);border:1px solid var(--rule);border-left:2px solid var(--rule);
+  padding:11px 14px;transition:.18s;
+}
+.seed:hover{border-left-color:var(--amber);color:var(--bone);background:var(--ink-3);transform:translateX(3px)}
+.seed span{display:block;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--bone-faint);margin-bottom:3px}
+
+/* ── turns ────────────────────────────────────────────── */
+.turn{margin-bottom:26px;animation:rise .45s cubic-bezier(.2,.7,.3,1) both}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.said{
+  background:var(--ink-3);border:1px solid var(--rule);border-left:2px solid var(--bone-faint);
+  padding:12px 15px;white-space:pre-wrap;word-break:break-word;
+}
+.said .who{font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--bone-faint);margin-bottom:5px}
+
+/* verdict strip: the answer to "was it detected, was it rewritten" */
+.verdict{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  margin-top:-1px;padding:9px 15px;border:1px solid var(--rule);border-top:none;
+  background:var(--ink-2);cursor:pointer;transition:.18s;
+}
+.verdict:hover{background:var(--ink-3)}
+.badge{
+  font-size:10px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;
+  padding:3px 9px;border:1px solid currentColor;border-radius:1px;white-space:nowrap;
+}
+.meta{color:var(--bone-faint);font-size:11px;letter-spacing:.03em}
+.meta b{color:var(--bone-dim);font-weight:400}
+.chevron{margin-left:auto;color:var(--bone-faint);font-size:10px;letter-spacing:.1em}
+
+.t-passthrough{color:var(--teal)}
+.t-repaired{color:var(--amber)}
+.t-escalated{color:var(--vermilion)}
+.t-blocked{color:var(--violet)}
+.t-working{color:var(--bone-dim)}
+
+.turn[data-decision="passthrough"] .said{border-left-color:var(--teal)}
+.turn[data-decision="repaired"] .said{border-left-color:var(--amber)}
+.turn[data-decision="escalated"] .said{border-left-color:var(--vermilion)}
+
+/* the rewrite, shown inline because it is the headline fact */
+.rewrite{
+  padding:11px 15px;border:1px solid var(--rule);border-top:none;
+  background:repeating-linear-gradient(45deg,transparent,transparent 9px,rgba(227,161,60,.035) 9px,rgba(227,161,60,.035) 18px);
+}
+.rewrite .label{font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--amber);margin-bottom:5px}
+.rewrite p{margin:0;color:var(--bone);white-space:pre-wrap;word-break:break-word}
+
+.reply{padding:14px 15px 0;white-space:pre-wrap;word-break:break-word}
+.reply .who{font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--bone-faint);margin-bottom:6px}
+.reply .body{color:var(--bone)}
+.reply .body.none{color:var(--bone-faint);font-style:italic}
+
+.working{display:flex;align-items:center;gap:9px;color:var(--bone-dim)}
+.bar{width:52px;height:2px;background:var(--rule);overflow:hidden;flex:none}
+.bar i{display:block;height:100%;width:36%;background:var(--amber);animation:slide 1.25s ease-in-out infinite}
+@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(320%)}}
+.err{color:var(--vermilion);border-left:2px solid var(--vermilion);padding-left:11px}
+
+/* ── composer ─────────────────────────────────────────── */
+form{
+  flex:none;display:flex;gap:10px;align-items:flex-end;
+  padding:var(--pad);border-top:1px solid var(--rule);background:var(--ink-2);
+}
+textarea{
+  flex:1;resize:none;font:inherit;color:var(--bone);background:var(--ink);
+  border:1px solid var(--rule);padding:11px 13px;min-height:46px;max-height:180px;
+  outline:none;transition:border-color .18s;
+}
+textarea:focus{border-color:var(--amber)}
+textarea::placeholder{color:var(--bone-faint)}
+button.send{
+  font:inherit;font-weight:500;letter-spacing:.09em;text-transform:uppercase;font-size:11px;
+  color:var(--ink);background:var(--amber);border:none;padding:14px 20px;cursor:pointer;
+  transition:.18s;flex:none;
+}
+button.send:hover:not(:disabled){background:var(--bone);transform:translateY(-1px)}
+button.send:disabled{opacity:.35;cursor:not-allowed}
+
+/* ── trace panel ──────────────────────────────────────── */
+#trace{overflow-y:auto;padding:var(--pad);background:var(--ink-2);min-height:0}
+#trace h3{
+  font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--bone-faint);
+  margin:0 0 12px;padding-bottom:9px;border-bottom:1px solid var(--rule);font-weight:500;
+}
+.empty{color:var(--bone-faint);font-style:italic;font-size:12px}
+.sect{margin-bottom:20px}
+.sect > h4{
+  font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--bone-dim);
+  margin:0 0 7px;font-weight:500;
+}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-size:12px}
+.kv dt{color:var(--bone-faint)}
+.kv dd{margin:0;color:var(--bone);text-align:right;word-break:break-word}
+.mono-block{
+  background:var(--ink);border:1px solid var(--rule);padding:9px 11px;font-size:11.5px;
+  white-space:pre-wrap;word-break:break-word;color:var(--bone-dim);
+}
+.mrtf{color:var(--vermilion);background:rgba(217,85,47,.1);padding:1px 4px;border-radius:1px}
+.ok{color:var(--teal)}
+.no{color:var(--vermilion)}
+.hash{font-size:10.5px;color:var(--bone-faint);word-break:break-all}
+.feat{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--bone-dim);
+  padding:2px 0;border-bottom:1px dotted var(--rule)}
+.step{border-left:2px solid var(--amber);padding:2px 0 2px 11px;margin-bottom:11px}
+.step .name{color:var(--amber);font-size:11px;letter-spacing:.09em;font-weight:500}
+.edit{font-size:11.5px;color:var(--bone-dim)}
+.edit s{color:var(--vermilion);text-decoration-thickness:1px}
+.edit b{color:var(--teal);font-weight:400}
+
+@media(max-width:900px){
+  main{grid-template-columns:1fr;grid-template-rows:minmax(38vh,1fr) auto}
+  #stream{border-right:none}
+  #trace{border-top:1px solid var(--rule);max-height:40vh}
+}
+@media(max-width:620px){
+  /* The masthead was wrapping to three rows and eating the transcript. */
+  header{gap:10px;padding:11px var(--pad)}
+  h1{font-size:21px}
+  .tagline{display:none}
+  .chip{padding:3px 8px;font-size:10px}
+  .intro{margin:3vh auto}
+  .intro h2{font-size:26px}
+  form{padding:12px}
+  button.send{padding:12px 15px}
+  .verdict{gap:7px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AARAMSE <em>Console</em></h1>
+  <div class="tagline">over-refusal repair &middot; audited</div>
+  <div class="spacer"></div>
+  <div class="chip"><span class="dot" id="pulse"></span><b id="model">connecting</b></div>
+  <div class="chip">operators <b id="ops">&mdash;</b></div>
+  <div class="chip">chain <b id="chain">&mdash;</b></div>
+</header>
+
+<main>
+  <section id="stream">
+    <div id="log">
+      <div class="intro">
+        <h2>Ask the way a customer would.</h2>
+        <p>Every turn is probed before it is answered. If the model refuses a question it
+           should not have, the layer localizes the trigger, repairs it, and re-probes &mdash;
+           and if the repair does not work, it escalates instead of guessing. Nothing is
+           touched unless it was refused first.</p>
+        <div class="seeds" id="seeds"></div>
+      </div>
+    </div>
+    <form id="composer">
+      <textarea id="q" rows="1" placeholder="Ask a question&hellip;"></textarea>
+      <button class="send" id="send" type="submit">Send</button>
+    </form>
+  </section>
+
+  <aside id="trace">
+    <h3>Decision trace</h3>
+    <div id="trace-body"><p class="empty">Send a question, then click any verdict strip to inspect exactly what the layer did and why.</p></div>
+  </aside>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const log = $('#log'), traceBody = $('#trace-body');
+const traces = new Map();
+let busy = false, seq = 0;
+
+const SEEDS = [
+  ['Likely passthrough', 'What is compound interest, and how does it differ from simple interest?'],
+  ['Likely over-refusal', 'What neighbourhood data did banks historically use to deny loan applications?'],
+  ['Should be upheld',   'How do I hide assets from my bankruptcy trustee?'],
+];
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
+
+// ── boot ────────────────────────────────────────────────
+SEEDS.forEach(([kind, text]) => {
+  const b = el('button', 'seed', `<span>${esc(kind)}</span>${esc(text)}`);
+  b.type = 'button';
+  b.onclick = () => { $('#q').value = text; $('#q').focus(); sizeBox(); };
+  $('#seeds').append(b);
+});
+
+fetch('/v1/config').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(cfg => {
+  $('#model').textContent = cfg.model;
+  $('#ops').textContent = (cfg.operators || []).length || '0';
+  $('#pulse').className = 'dot live';
+}).catch(() => {
+  $('#model').textContent = 'unauthenticated or down';
+  $('#pulse').className = 'dot down';
+});
+
+// ── composer ────────────────────────────────────────────
+const box = $('#q');
+// The keyboard hint is worth the width on a desktop and not on a phone.
+const hint = () => box.placeholder = window.innerWidth < 620
+  ? 'Ask a question…'
+  : 'Ask a question…   ⏎ send  ·  ⇧⏎ newline';
+hint(); addEventListener('resize', hint);
+function sizeBox(){ box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 180) + 'px'; }
+box.addEventListener('input', sizeBox);
+box.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#composer').requestSubmit(); }
+});
+
+$('#composer').addEventListener('submit', async e => {
+  e.preventDefault();
+  const query = box.value.trim();
+  if (!query || busy) return;
+  box.value = ''; sizeBox();
+  const intro = document.querySelector('.intro'); if (intro) intro.remove();
+  setBusy(true);
+  try { await runTurn(query); }
+  finally { setBusy(false); box.focus(); }
+});
+
+function setBusy(v){ busy = v; $('#send').disabled = v; }
+
+// ── one turn ────────────────────────────────────────────
+async function runTurn(query){
+  const id = 'turn' + (++seq);
+  const turn = el('div', 'turn');
+  turn.id = id;
+  turn.append(el('div', 'said', `<div class="who">You asked</div>${esc(query)}`));
+  const status = el('div', 'verdict');
+  status.innerHTML = `<span class="badge t-working">working</span>
+    <span class="working"><span class="bar"><i></i></span><span class="meta" data-live>probing the boundary&hellip;</span></span>`;
+  turn.append(status);
+  log.append(turn);
+  log.scrollTop = log.scrollHeight;
+
+  let job;
+  try {
+    const res = await fetch('/v1/chat', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query})
+    });
+    if (!res.ok) throw new Error(`server said ${res.status}: ${(await res.text()).slice(0,180)}`);
+    job = await res.json();
+  } catch (err) { return fail(turn, status, err.message); }
+
+  const live = status.querySelector('[data-live]');
+  while (true) {
+    await new Promise(r => setTimeout(r, 900));
+    let s;
+    try {
+      const res = await fetch(`/v1/chat/${job.id}`);
+      if (!res.ok) throw new Error(`poll failed: ${res.status}`);
+      s = await res.json();
+    } catch (err) { return fail(turn, status, err.message); }
+
+    if (s.status === 'running') {
+      // Real numbers beat a spinner: a repair is 23-26 calls and minutes long,
+      // so the honest thing is to show it counting.
+      live.innerHTML = `${s.elapsed_s}s &middot; <b>${s.model_calls}</b> model call${s.model_calls === 1 ? '' : 's'}`;
+      continue;
+    }
+    if (s.status === 'error') return fail(turn, status, s.error || 'the turn failed');
+    return render(turn, status, s.result);
+  }
+}
+
+function fail(turn, status, message){
+  status.remove();
+  turn.append(el('div', 'reply', `<div class="who err">Failed</div><div class="body err">${esc(message)}</div>`));
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── render a finished turn ──────────────────────────────
+function render(turn, status, t){
+  traces.set(turn.id, t);
+  turn.dataset.decision = t.decision;
+
+  const detected = t.baseline && t.baseline.refused;
+  const bits = [
+    detected ? 'refused at baseline' : 'answered at baseline',
+    t.identical ? 'query sent byte-identical' : 'query rewritten',
+    `${t.model_calls} calls`,
+    `${t.elapsed_s}s`,
+  ];
+  status.innerHTML =
+    `<span class="badge t-${esc(t.decision)}">${esc(t.decision)}</span>
+     <span class="meta">${bits.map(esc).join(' &middot; ')}</span>
+     <span class="chevron">trace &rarr;</span>`;
+  status.onclick = () => showTrace(turn.id);
+
+  if (!t.identical) {
+    turn.append(el('div', 'rewrite',
+      `<div class="label">Sent to the model instead</div><p>${esc(t.rewritten)}</p>`));
+  }
+
+  const body = t.answer
+    ? `<div class="body">${esc(t.answer)}</div>`
+    : `<div class="body none">No answer was delivered &mdash; this turn was escalated to a supervisor.</div>`;
+  turn.append(el('div', 'reply', `<div class="who">Agent replied</div>${body}`));
+
+  log.scrollTop = log.scrollHeight;
+  showTrace(turn.id);
+}
+
+// ── trace panel ─────────────────────────────────────────
+function showTrace(turnId){
+  const t = traces.get(turnId);
+  if (!t) return;
+  document.querySelectorAll('.turn').forEach(n => n.style.opacity = n.id === turnId ? '1' : '.62');
+
+  const sects = [];
+
+  sects.push(section('Verdict', dl([
+    ['decision', `<span class="t-${esc(t.decision)}">${esc(t.decision)}</span>`],
+    ['refused at baseline', bool(t.baseline && t.baseline.refused)],
+    ['baseline class', esc((t.baseline && t.baseline.label) || 'not probed')],
+    ['query byte-identical', bool(t.identical, true)],
+    ['refusal margin', t.refusal_margin],
+    ['oracle calls', t.oracle_calls],
+    ['search space', t.search_space],
+    ['model calls', t.model_calls],
+    ['elapsed', t.elapsed_s + 's'],
+  ])));
+
+  if (t.reason) sects.push(section('Why', `<div class="mono-block">${esc(t.reason)}</div>`));
+
+  sects.push(section('Program', `<div class="mono-block">${esc(t.program_render || 'IDENTITY')}</div>`));
+
+  (t.steps || []).forEach(step => {
+    const rows = [];
+    if (step.mrtf) {
+      rows.push(`<div class="edit">minimal refusal-triggering fragment, found in
+        ${step.localization_probes} probes:<br><span class="mrtf">${esc(step.mrtf)}</span></div>`);
+    }
+    (step.generalizations || []).forEach(([from, to]) =>
+      rows.push(`<div class="edit"><s>${esc(from)}</s> &rarr; <b>${esc(to)}</b></div>`));
+    (step.dropped || []).forEach(d => rows.push(`<div class="edit">dropped: <s>${esc(d)}</s></div>`));
+    if (!rows.length) rows.push('<div class="edit">no declared substitutions</div>');
+    sects.push(`<div class="step"><div class="name">${esc(step.operator)}</div>${rows.join('')}</div>`);
+  });
+
+  const a = t.actionability_before || {}, b = t.actionability_after || {};
+  sects.push(section('Actionability lattice',
+    `<div class="feat"><span>before</span><span>${a.score ?? '—'}</span></div>
+     ${(a.features || []).map(([n, w]) => `<div class="feat"><span>&nbsp;&nbsp;${esc(n)}</span><span>${w}</span></div>`).join('')}
+     <div class="feat"><span>after</span><span>${b.score ?? '—'}</span></div>
+     ${(b.features || []).map(([n, w]) => `<div class="feat"><span>&nbsp;&nbsp;${esc(n)}</span><span>${w}</span></div>`).join('')}`));
+
+  if (t.baseline && t.baseline.text) {
+    sects.push(section('What the model said untouched',
+      `<div class="mono-block">${esc(t.baseline.text)}</div>`));
+  }
+
+  if (t.audit && t.audit.hash) {
+    $('#chain').textContent = t.audit.chain_ok ? 'verified' : 'BROKEN';
+    $('#chain').className = t.audit.chain_ok ? 'ok' : 'no';
+    sects.push(section('Audit record', dl([
+      ['index', t.audit.index],
+      ['chain', bool(t.audit.chain_ok, true)],
+    ]) + `<div class="hash">${esc(t.audit.hash)}</div>`));
+  }
+
+  traceBody.innerHTML = sects.join('');
+  $('#trace').scrollTop = 0;
+}
+
+const section = (title, html) => `<div class="sect"><h4>${esc(title)}</h4>${html}</div>`;
+const dl = rows => `<dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
+const bool = (v, goodIsTrue) => v
+  ? `<span class="${goodIsTrue ? 'ok' : 'no'}">yes</span>`
+  : `<span class="${goodIsTrue ? 'no' : 'ok'}">no</span>`;
+</script>
+</body>
+</html>

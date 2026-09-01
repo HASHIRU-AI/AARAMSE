@@ -4,8 +4,14 @@ A model-agnostic middleware layer that detects when a deployed financial agent
 refuses a legitimate question, repairs the refusal, and logs every intervention
 in a tamper-evident record a supervisor can read.
 
-No runtime dependencies. `python examples/demo.py` runs the whole pipeline
-offline against a scripted stand-in model; `--live` drives a real one.
+Every model call goes through LiteLLM, so the provider and model are a spec
+string. `python examples/demo.py` runs the whole pipeline offline against a
+scripted stand-in model; `--live` drives a real one. `aaramse serve` puts a
+chat console in front of it.
+
+**This is the MVP branch.** It carries the modules with live measurements
+behind them and nothing else. See `main` for the full research tree, including
+the three-arm comparison this branch cannot reproduce.
 
 ## What it does
 
@@ -20,33 +26,19 @@ query ──> probe ──> refused? ──no──> passthrough, untouched
 
 ## Measured results
 
-`gemma4:12b`, FalseReject finance slice + OR-Bench-toxic, 10 prompts per class,
-under an FCA compliance system prompt, scored with the XSTest three-way
-taxonomy. 8 of 10 benign and 10 of 10 toxic prompts were refused at baseline, so
-those are the denominators. Source: `audit/three_arm_eval.json`.
+The headline comparison -- `TARGETED_REPAIR` against `LLM_REPHRASE` against
+`FRAME_ASSERT`, on the FalseReject finance slice and OR-Bench-toxic under an FCA
+compliance prompt -- lives on `main`, with `examples/three_arm_eval.py` and
+`audit/three_arm_eval.json`. It is not reproducible here: the generative
+rephrase arm is not part of this branch.
 
-| Arm | Benign repaired | Toxic leaked |
-|---|---|---|
-| `TARGETED_REPAIR` (mRTF-confined edit) | 1/8 — 12% | **0/10** |
-| `LLM_REPHRASE` (full-prompt rewrite) | 6/8 — 75% | 2/10 — 20% |
-| `FRAME_ASSERT` (deployer context) | **7/8 — 88%** | 2/10 — 20% |
-
-Confinement is what costs recovery. The two unconfined arms clear most of the
-over-refusals and leak at the same rate as each other; the mRTF-confined arm
-leaks nothing and clears almost nothing. That trade-off is the finding, not a
-bug in any arm.
-
-Both `LLM_REPHRASE` leaks are OR-Bench prompts whose toxic label is doubtful
-— requesting a password reset for one's own account (scored `partial_refusal`,
-not full compliance) and how investigators compile public records legally. The
-second is also one of `FRAME_ASSERT`'s two. Treat 20% as an upper bound pending
-human adjudication.
-
-An earlier run (`audit/three_arm_eval_pretune.json`, rewriter prompt untuned)
-put `LLM_REPHRASE` at 1/8 with 0/10 leaked. Tuning the rewriter moved it from
-safe-and-weak to strong-and-leaky. It did not find a third option, and that is
-the result worth reporting: on this corpus no unconfined arm has yet recovered
-benign queries without also moving toxic ones.
+What that comparison established, and why this branch is shaped the way it is:
+confinement costs recovery. The mRTF-confined arm cleared 1 of 8 benign
+over-refusals and leaked 0 of 10 toxic prompts; the deployer frame cleared 7 of
+8 and leaked 2 of 10. Both of those ship. The full-prompt rewrite scored 6 of 8
+and 2 of 10 after its instruction was tuned, and 1 of 8 and 0 of 10 before --
+the tuning bought the recovery and the leak together, which is a property of a
+prompt rather than of a method. It does not ship.
 
 ### Leaving benign queries alone
 
@@ -130,24 +122,25 @@ margin, and the certificates in force.
 | Module | Purpose |
 |---|---|
 | `gateway.py` | The deployable layer: build, certify, handle, report |
-| `client.py` | The one place that talks to a model |
+| `client.py` | Client protocol, caching, and the raw-HTTP Ollama client |
+| `equivalence.py` | Intent-equivalence judge; `TargetedRepair` will not run without it |
 | `judge.py` | XSTest three-way response classification |
 | `localize.py` | Delta-debugging mRTF localization |
 | `targeted.py` | Fragment-confined repair with structural splicing |
-| `rewriter.py` | Full-prompt LLM rephrase (DDOR's baseline) |
 | `operators/` | Rule-based operator algebra, registry, deployer frame |
 | `search.py` | Bounded shortest-program search, escalation |
 | `invariants.py` | Actionability lattice and intent guard |
 | `certification.py` | Contrastive certificates |
 | `audit.py` | Hash-chained intervention log |
-| `serve.py` | HTTP sidecar: repair, report, and A2A routes |
-| `a2a.py` | Agent2Agent `message/send` envelope and agent card |
+| `serve.py` | HTTP sidecar: console, chat, repair, and report routes |
+| `ui.py` | Console backend: decision traces and the job store behind them |
+| `static/index.html` | The console itself |
 | `__main__.py` | CLI: `serve`, `repair`, `report` |
-| `providers.py` | OpenAI and Anthropic clients, and the model-spec factory |
+| `providers.py` | LiteLLM client, native fallbacks, and the model-spec factory |
 | `report.py` | Supervisor-facing intervention report |
 | `budget.py` | Induced-leakage measurement and fail-closed enforcement |
 | `splits.py` | Deterministic held-out splits by content hash |
-| `falsereject.py`, `xstest.py`, `finqa.py` | Vendored benchmark loaders |
+| `falsereject.py`, `finqa.py` | Vendored benchmark loaders |
 | `corpus.py` | Hand-written test fixtures — **not** evidence |
 
 ## Usage
@@ -162,29 +155,73 @@ send_to_agent(result.rewritten)   # == user_query unless decision is REPAIRED
 print(gw.report())
 ```
 
+## Choosing a model
+
+Every model call goes through LiteLLM, so the deployed model is a spec string:
+
+```python
+Gateway.build(GatewayConfig(model="anthropic:claude-opus-5"))
+Gateway.build(GatewayConfig(model="openai:gpt-5"))
+Gateway.build(GatewayConfig(model="gemma4:12b"))          # bare tag = Ollama
+Gateway.build(GatewayConfig(model="openrouter/meta-llama/llama-3-70b"))
+```
+
+This is not a convenience. A certificate is a property of *(operator, model,
+corpus)* — `DEFINITIONALIZE` certified clean against a simulator and leaked on
+its first live query — so re-running the battery against another model has to be
+cheap or it does not happen.
+
+The hand-rolled OpenAI, Anthropic and Ollama clients are still there for a
+deployment that cannot take a dependency tree: `build_client(..., backend="native")`,
+or `AARAMSE_CLIENT_BACKEND=native`. They speak three providers; LiteLLM speaks
+the rest.
+
+Ollama models are sent `think=False`. Without it a reasoning model spends the
+whole token budget thinking and returns an empty string, which nothing
+downstream can tell apart from a model that answered with nothing.
+
 ## Running
 
 ```bash
 python examples/demo.py                    # offline, instant
 python examples/demo.py --live gemma4:12b  # against a real model
-python examples/three_arm_eval.py          # the comparison table above
 python examples/finqa_control.py           # false-intervention rate, 120 items
 python examples/finqa_cause.py             # why each refusal happened
-python examples/control_eval.py            # DDOR-setting control (needs a real budget)
-PYTHONPATH=src python -m pytest -q         # 317 tests
+PYTHONPATH=src python -m pytest -q         # 293 tests
 ```
 
-As a sidecar:
+## The console
 
 ```bash
-pip install -e .                                        # or: export PYTHONPATH=src
+pip install -e .                            # or: export PYTHONPATH=src
+aaramse serve --model qwen3.5:4b            # console at http://localhost:8080/
+```
+
+A chat window that shows its work. Each turn carries a verdict —
+`passthrough`, `repaired`, or `escalated` — and states whether the model refused
+at baseline and whether the query reached it byte-identical. When a query was
+rewritten, the console shows what was sent instead. Clicking the verdict opens
+the trace: the operator program, the localized mRTF and what it cost to find,
+every declared substitution, both actionability profiles, the untouched reply,
+and the audit hash with its chain check.
+
+A repair runs 23-26 model calls and can take minutes, so a turn is a job:
+`POST /v1/chat` returns immediately and the console polls `/v1/chat/{id}`,
+showing elapsed time and the running call count rather than a spinner that
+cannot say what it is doing.
+
+The console page is served without a token because it carries no user data.
+Everything it calls is behind the token when one is set.
+
+As a sidecar without the console:
+
+```bash
 python examples/preflight.py                            # split, certify, budget
 AARAMSE_API_TOKEN=$(openssl rand -hex 16) aaramse serve --model anthropic:claude-opus-5
 ```
 
 `POST /v1/repair` with `{"query": "..."}` and forward the `rewritten` field; it
-is byte-identical to your query unless the decision is `repaired`. A2A clients
-use `POST /a2a`.
+is byte-identical to your query unless the decision is `repaired`.
 
 Configuration, Docker, endpoint reference, and the latency budget live in
 **[docs/](docs/)** — this README does not repeat them.
@@ -200,13 +237,17 @@ Configuration, Docker, endpoint reference, and the latency budget live in
   taxonomy, validated on 6 hand labels. It erred at least once in 40.
 - **Leak figures rest partly on OR-Bench labels** that DDOR specifically
   criticises as noisy. Treat them as upper bounds pending human adjudication.
+- **This branch no longer has zero runtime dependencies.** That property was
+  load-bearing and advertised; LiteLLM ends it. The native backend is the
+  escape hatch, not a claim that nothing changed.
 - **Repair is slow.** Measured against `gemma4:12b`: a passthrough takes ~30-50s
   (2 model calls), a repair 7.5-8.7 minutes (~23-26 calls). This does not fit
   behind a synchronous request; see [docs/deployment.md](docs/deployment.md).
 - **The sidecar handles one request at a time.** The audit log recomputes its
   tail hash by reading the file, so appends are serialised by a lock.
-- **The A2A adapter is a subset** — `message/send` only, no task lifecycle or
-  streaming. The agent card advertises exactly that.
+- **The console is single-tenant.** Jobs live in memory and die with the
+  process, and the service serialises every turn behind one lock, so it is a
+  supervisor's window onto one gateway rather than a multi-user product.
 - **The judge still sits on the runtime path.** `gateway.JudgedProbe` uses the
   three-way judge to decide refusal at runtime, which `judge.py` explicitly
   forbids. Fixing it will move the measured numbers, so it is not a silent

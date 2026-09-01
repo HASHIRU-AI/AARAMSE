@@ -2,8 +2,9 @@
 
 AARAMSE runs as a process in front of your agent. It takes a query, decides
 whether the model behind it refuses, repairs the refusal if it can, and returns
-the text you should forward. It has no runtime dependencies — the image is a
-stock Python base plus this source tree, and nothing is fetched at build time.
+the text you should forward. Its one runtime dependency is LiteLLM, which is
+what makes the deployed provider and model a configuration value rather than a
+code change.
 
 ## The shape of a deployment
 
@@ -81,7 +82,6 @@ configured. Flags win over the environment.
 | `AARAMSE_ALLOW_UNCERTIFIED` | `--allow-uncertified` | off | Run operators with no passing certificate. |
 | `AARAMSE_HOST` | `--host` | `0.0.0.0` | Bind interface. |
 | `AARAMSE_PORT` | `--port` | `8080` | Bind port. |
-| `AARAMSE_PUBLIC_URL` | `--public-url` | empty | URL advertised on the A2A agent card. |
 | `AARAMSE_LOG_LEVEL` | `--log-level` | `INFO` | Python logging level. |
 | `OLLAMA_HOST` | — | `http://localhost:11434` | Ollama base URL. Set this in a container. |
 

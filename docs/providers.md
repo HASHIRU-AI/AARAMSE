@@ -45,14 +45,32 @@ scripts once each grew their own client, and the answer settings drifted
 between the search's accept decision and the scorer's judgement — two calls
 generating different answers for the same repair.
 
-## Why raw HTTP and not the vendors' SDKs
+## LiteLLM by default, raw HTTP as the fallback
 
-This package declares no runtime dependencies, and that is load-bearing: it is
-meant to drop in front of a regulated agent without bringing a dependency tree
-to audit. Every request goes through `client.post_json`, the single seam a test
-replaces.
+`LiteLLMClient` is what `build_client` returns unless told otherwise, and every
+model call in the package goes through it. The reason is not convenience: a
+certificate is a property of *(operator, model, corpus)*, and `DEFINITIONALIZE`
+certified clean against a simulator and leaked on its first live query. Re-running
+the battery against a different model has to be one string, or nobody does it.
 
-The cost is that provider quirks are ours to track. Two are already encoded:
+Specs translate to LiteLLM routes — `openai:gpt-5` becomes `openai/gpt-5`, a
+bare `gemma4:12b` becomes `ollama/gemma4:12b`, and anything already containing a
+slash passes through so an unmodelled route still works.
+
+**Ollama models are sent `think=False`.** A reasoning model otherwise spends the
+whole token budget thinking and returns an empty `content`, which nothing
+downstream can distinguish from a model that answered with nothing — the judge
+would score silence as a refusal on every prompt. `qwen3.5:4b` did exactly this
+until the default was added.
+
+The hand-rolled clients remain for a deployment that cannot take a dependency
+tree: `build_client(..., backend="native")`, or `AARAMSE_CLIENT_BACKEND=native`.
+They speak OpenAI, Anthropic and Ollama; asking them for anything else is an
+error rather than a silent fallback to the wrong provider. Every request goes
+through `client.post_json`, the single seam a test replaces.
+
+The cost of hand-rolling is that provider quirks are ours to track. Two are
+encoded in the native clients:
 
 **Anthropic never receives `temperature`.** Current Claude models removed the
 sampling parameters and reject `temperature` with a 400. This package asks for
