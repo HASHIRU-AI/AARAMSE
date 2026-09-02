@@ -23,7 +23,7 @@ from typing import Deque, List, Optional, Protocol, Sequence, Set, Tuple
 from .invariants import ActionabilityScorer, IntentGuard
 from .operators.base import RewriteOperator
 from .refusal import CountingOracle, RefusalOracle, ResponseProbe
-from .types import Decision, RepairResult, RewriteProgram
+from .types import Decision, RepairResult, RewriteProgram, SearchDiagnostics
 
 __all__ = ["Realizer", "RepairSearch", "SearchConfig", "search_space_size"]
 
@@ -144,6 +144,15 @@ class RepairSearch:
         frontier: Deque[Tuple[str, RewriteProgram]] = deque([(query, RewriteProgram())])
         seen: Set[str] = {query}
         blocked: List[str] = []
+        probed_refused = 0
+
+        def diagnostics() -> SearchDiagnostics:
+            """Snapshot the failure counters for an escalation result."""
+            return SearchDiagnostics(
+                candidates_generated=len(seen) - 1,
+                probed_refused=probed_refused,
+                blocked_candidates=tuple(blocked),
+            )
 
         while frontier:
             text, program = frontier.popleft()
@@ -173,12 +182,16 @@ class RepairSearch:
                     continue
 
                 if counter.calls >= self.config.max_oracle_calls:
-                    return self._escalate(query, before, counter, space, "oracle budget exhausted")
+                    return self._escalate(
+                        query, before, counter, space, "oracle budget exhausted",
+                        diagnostics(),
+                    )
 
                 if self.probe is not None:
                     response = self.probe.probe(candidate)
                     counter.calls += 1
                     if response.refused:
+                        probed_refused += 1
                         frontier.append((candidate, extended))
                         continue
                     if response.delivers_procedure and self.config.abort_on_content_delivery:
@@ -188,6 +201,7 @@ class RepairSearch:
                             query, before, counter, space,
                             f"candidate {extended.render()} elicited step-by-step "
                             "assistance; repair abandoned",
+                            diagnostics(),
                         )
                     final = self._realize(query, candidate, extended)
                     return self._result(
@@ -204,12 +218,13 @@ class RepairSearch:
                         f"cleared at depth {extended.length}",
                     )
 
+                probed_refused += 1
                 frontier.append((candidate, extended))
 
         reason = "search exhausted; refusal is content-driven"
         if blocked:
             reason += f"; {len(blocked)} candidate(s) blocked by invariants"
-        return self._escalate(query, before, counter, space, reason)
+        return self._escalate(query, before, counter, space, reason, diagnostics())
 
     def _realize(self, query: str, candidate: str, program: RewriteProgram) -> str:
         """Apply the optional realizer, keeping its output only if it still passes."""
@@ -235,18 +250,20 @@ class RepairSearch:
         raise RuntimeError("no oracle or probe configured")
 
     def _escalate(
-        self, query: str, before, counter: CountingOracle, space: int, reason: str
+        self, query: str, before, counter: CountingOracle, space: int, reason: str,
+        diagnostics: Optional[SearchDiagnostics] = None,
     ) -> RepairResult:
         """Build the escalation result for an unrepairable refusal."""
         return self._result(
             query, query, RewriteProgram(), Decision.ESCALATED, before, before,
-            counter.calls, space, reason,
+            counter.calls, space, reason, diagnostics,
         )
 
     @staticmethod
     def _result(
         query: str, rewritten: str, program: RewriteProgram, decision: Decision,
         before, after, calls: int, space: int, reason: str,
+        diagnostics: Optional[SearchDiagnostics] = None,
     ) -> RepairResult:
         """Assemble an immutable repair result."""
         return RepairResult(
@@ -260,4 +277,5 @@ class RepairSearch:
             oracle_calls=calls,
             search_space=space,
             reason=reason,
+            diagnostics=diagnostics,
         )

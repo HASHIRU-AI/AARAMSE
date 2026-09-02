@@ -89,3 +89,54 @@ def test_realizer_output_is_re_checked(search, monkeypatch):
     result = search.repair("Should I dump my 401(k) into gold before the crash?")
     assert result.decision is Decision.REPAIRED
     assert "Should I" not in result.rewritten
+
+
+def test_escalation_carries_diagnostics(search, oracle, pairs):
+    """An escalation must record why the search gave up, not just that it did."""
+    twin = pairs[0].prohibited_twin
+    assert oracle.refuses(twin)
+    result = search.repair(twin)
+    assert result.decision is Decision.ESCALATED
+    diag = result.diagnostics
+    assert diag is not None
+    # The search explored candidates and either the guard blocked them or the
+    # model kept refusing; a bare "gave up" with no exploration would be a bug.
+    assert diag.candidates_generated >= 0
+    assert diag.probed_refused >= 0
+    assert isinstance(diag.blocked_candidates, tuple)
+    # For a content-driven refusal the operators do produce candidates that
+    # clear the guard and are put to the oracle, which upholds the refusal.
+    assert diag.probed_refused > 0 or diag.blocked_candidates
+
+
+def test_repair_and_passthrough_carry_no_diagnostics(search):
+    """Diagnostics are a failure record; successes leave the field empty."""
+    repaired = search.repair("Should I dump my 401(k) into gold before the crash?")
+    assert repaired.decision is Decision.REPAIRED
+    assert repaired.diagnostics is None
+
+    through = search.repair("What is compound interest?")
+    assert through.decision is Decision.PASSTHROUGH
+    assert through.diagnostics is None
+
+
+def test_budget_exhaustion_is_distinguishable_from_content_refusal(search, oracle, pairs):
+    """A starved budget escalates for a different reason than an upheld refusal."""
+    twin = pairs[0].prohibited_twin
+    starved = RepairSearch(
+        search.operators, oracle, config=SearchConfig(max_depth=3, max_oracle_calls=1)
+    )
+    result = starved.repair(twin)
+    assert result.decision is Decision.ESCALATED
+    assert "budget exhausted" in result.reason
+    assert result.diagnostics is not None
+
+
+def test_failure_class_labels_the_three_count_regimes():
+    """The triage classes are defined once, on the diagnostics themselves."""
+    from aaramse.types import SearchDiagnostics
+    assert SearchDiagnostics(0, 0, ()).failure_class == "no_candidate"
+    assert SearchDiagnostics(3, 0, ("P: raised actionability",)).failure_class == "guard_blocked"
+    assert SearchDiagnostics(3, 2, ()).failure_class == "model_upheld"
+    # a probed refusal dominates even when some candidates were also blocked
+    assert SearchDiagnostics(4, 1, ("P: x",)).failure_class == "model_upheld"

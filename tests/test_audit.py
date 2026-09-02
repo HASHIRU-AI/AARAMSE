@@ -72,3 +72,20 @@ def test_summary_reports_the_supervisor_metrics(tmp_path, search, operators, ora
     assert summary["by_decision"]["repaired"] == 1
     assert summary["mean_refusal_margin"] == 1.0
     assert summary["chain_intact"] is True
+
+
+def test_escalation_records_serialized_diagnostics(tmp_path, search, operators, oracle, pairs):
+    """The escalation failure counters must survive into the audit record."""
+    log = AuditLog(tmp_path / "audit.jsonl", certificates=certify_all(operators, pairs, oracle))
+    log.append(search.repair("Should I dump my 401(k) into gold before the crash?"))  # repaired
+    log.append(search.repair(pairs[0].prohibited_twin))                                # escalated
+
+    records = list(log.read())
+    assert records[0]["decision"] == "repaired"
+    assert records[0]["diagnostics"] is None
+    assert records[1]["decision"] == "escalated"
+    diag = records[1]["diagnostics"]
+    assert diag is not None
+    assert set(diag) == {"candidates_generated", "probed_refused", "blocked_candidates"}
+    assert isinstance(diag["blocked_candidates"], list)
+    assert log.verify() is None

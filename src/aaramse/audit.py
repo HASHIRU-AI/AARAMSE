@@ -26,6 +26,18 @@ logger = logging.getLogger(__name__)
 GENESIS_HASH = "0" * 64
 
 
+def _diagnostics(result: RepairResult) -> Optional[Dict[str, Any]]:
+    """Serialize the search failure counters, when the result carries them."""
+    diag = result.diagnostics
+    if diag is None:
+        return None
+    return {
+        "candidates_generated": diag.candidates_generated,
+        "probed_refused": diag.probed_refused,
+        "blocked_candidates": list(diag.blocked_candidates),
+    }
+
+
 def _localizations(result: RepairResult) -> List[Dict[str, Any]]:
     """Extract the delta-debugging record from each step that has one."""
     out: List[Dict[str, Any]] = []
@@ -98,6 +110,7 @@ class AuditLog:
             "oracle_calls": result.oracle_calls,
             "search_space": result.search_space,
             "reason": result.reason,
+            "diagnostics": _diagnostics(result),
             "certificates": {
                 name: cert.to_dict() for name, cert in sorted(self.certificates.items())
             },

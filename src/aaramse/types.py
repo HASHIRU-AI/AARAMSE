@@ -20,6 +20,7 @@ __all__ = [
     "OperatorKind",
     "RepairResult",
     "RewriteProgram",
+    "SearchDiagnostics",
 ]
 
 
@@ -121,6 +122,57 @@ class RewriteProgram:
 
 
 @dataclass(frozen=True)
+class SearchDiagnostics:
+    """Why a search failed, recorded so an escalation is forensically legible.
+
+    Set on escalation results only. The three counts discriminate the failure
+    classes a triage needs to tell apart:
+
+    - ``candidates_generated == 0`` -- no operator produced an applicable
+      candidate; the search never had anything to test (localization/operator
+      coverage gap).
+    - ``blocked_candidates`` non-empty with ``probed_refused == 0`` -- candidates
+      were generated but every one was rejected by an invariant before it ever
+      reached the model (the guard is the binding constraint).
+    - ``probed_refused > 0`` -- candidates cleared the guard and were put to the
+      model, which still refused (the replacements were too weak to flip it).
+
+    Attributes:
+        candidates_generated: Distinct rewrite candidates enumerated.
+        probed_refused: Candidates that passed the guard but the model refused.
+        blocked_candidates: ``"<program>: <invariant reason>"`` for each candidate
+            an invariant rejected before it reached the model.
+    """
+
+    candidates_generated: int
+    probed_refused: int
+    blocked_candidates: Tuple[str, ...] = ()
+
+    @property
+    def failure_class(self) -> str:
+        """Label the dominant failure the counts imply.
+
+        Authoritative definition of the triage classes, so no downstream
+        analysis re-derives them inconsistently. Budget exhaustion is not
+        distinguishable from these counts alone -- it is read from the result's
+        ``reason`` -- so a caller that needs that case must check the reason
+        first and treat this label as the fallback.
+
+        Returns:
+            ``"no_candidate"`` -- nothing applicable was generated.
+            ``"guard_blocked"`` -- candidates were generated but only invariant
+                rejections occurred; none reached the model.
+            ``"model_upheld"`` -- at least one candidate reached the model and
+                the refusal held.
+        """
+        if self.candidates_generated == 0:
+            return "no_candidate"
+        if self.probed_refused == 0 and self.blocked_candidates:
+            return "guard_blocked"
+        return "model_upheld"
+
+
+@dataclass(frozen=True)
 class RepairResult:
     """Outcome of a bounded repair search over one query."""
 
@@ -134,6 +186,7 @@ class RepairResult:
     oracle_calls: int
     search_space: int
     reason: str = ""
+    diagnostics: Optional[SearchDiagnostics] = None
 
     @property
     def was_rewritten(self) -> bool:
