@@ -1,0 +1,10 @@
+audit/
+docs/
+examples/
+tests/
+.git/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+*.md

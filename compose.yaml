@@ -1,0 +1,35 @@
+# Minimal deployment: the sidecar in front of a local Ollama server.
+#
+# Point AARAMSE_MODEL at a hosted provider instead ("openai:gpt-5",
+# "anthropic:claude-opus-5") and drop the ollama service; the layer is
+# model-agnostic and nothing else changes.
+services:
+  aaramse:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Fail closed: without a token the sidecar answers anyone who can reach
+      # the port. Set this in the environment, never in this file.
+      AARAMSE_API_TOKEN: ${AARAMSE_API_TOKEN:?set AARAMSE_API_TOKEN before starting}
+      AARAMSE_MODEL: ${AARAMSE_MODEL:-gemma4:12b}
+      AARAMSE_DEPLOYER: ${AARAMSE_DEPLOYER:-Acme Wealth Ltd}
+      AARAMSE_AUTHORISATION_REF: ${AARAMSE_AUTHORISATION_REF:-FRN-123456}
+      AARAMSE_PUBLIC_URL: ${AARAMSE_PUBLIC_URL:-http://localhost:8080/a2a}
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      # The hash chain must outlive the container.
+      - aaramse-audit:/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  aaramse-audit:
+  ollama-models:
