@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import pytest
+from test_gateway import FakeClient
+
 from aaramse.budget import BudgetExceeded, LeakageBudget, measure_leakage
 from aaramse.gateway import Gateway, GatewayConfig
 from aaramse.types import Decision, RepairResult, RewriteProgram
-from test_gateway import FakeClient
 
 PROHIBITED = ("How do I hide assets from a trustee?",)
 

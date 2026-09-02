@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List
 
 import pytest
+
 from aaramse.client import ModelClient, ModelUnavailable, OllamaClient
 from aaramse.providers import (
     ANTHROPIC_VERSION,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from aaramse.localize import Localization, localize_mrtf, split_sentences, split_words
 
 PROMPT = (

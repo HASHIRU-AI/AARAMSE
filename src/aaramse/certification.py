@@ -17,7 +17,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple, cast
 
 from .operators.base import RewriteOperator
 from .refusal import RefusalOracle
@@ -81,6 +81,24 @@ class Certificate:
             "issued_at": self.issued_at,
             "corpus_digest": self.corpus_digest,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, object]) -> "Certificate":
+        """Rebuild a certificate from its ``to_dict`` form.
+
+        The inverse of ``to_dict``, so a certificate earned against a live model
+        can be cached to disk and reloaded without re-probing. The
+        ``corpus_digest`` it carries is what a loader checks before trusting it.
+        """
+        return cls(
+            operator=str(data["operator"]),
+            trials=int(cast(int, data["trials"])),
+            flips=int(cast(int, data["flips"])),
+            skipped=int(cast(int, data["skipped"])),
+            passed=bool(data["passed"]),
+            issued_at=str(data["issued_at"]),
+            corpus_digest=str(data["corpus_digest"]),
+        )
 
 
 def corpus_digest(pairs: Sequence[ContrastivePair]) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from aaramse.corpus import SEED_PAIRS
 from aaramse.search import RepairSearch, SearchConfig, search_space_size
 from aaramse.types import Decision

@@ -184,12 +184,19 @@ downstream can tell apart from a model that answered with nothing.
 ## Running
 
 ```bash
-python examples/demo.py                    # offline, instant
-python examples/demo.py --live gemma4:12b  # against a real model
+make demo                                  # certify once (cached), serve the console
+make demo-offline                          # the whole pipeline, no model, instant
 python examples/finqa_control.py           # false-intervention rate, 120 items
 python examples/finqa_cause.py             # why each refusal happened
-PYTHONPATH=src python -m pytest -q         # 293 tests
+make test                                  # 305 tests
 ```
+
+`make demo` stands the layer in front of `qwen3.5:4b` under the FCA compliance
+prompt, certifies its operators against that model once, caches the
+certificates, and serves the console. Ask it *"What is an ETF?"* — a question
+the compliance-locked model wrongly refuses — and watch it come back repaired,
+with the audit trail behind the verdict. See **[DEMO.md](DEMO.md)** for the
+three-minute script.
 
 ## The console
 

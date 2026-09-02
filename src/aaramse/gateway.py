@@ -162,7 +162,19 @@ class Gateway:
         A certificate earned against a simulator is worthless: operators here
         certified clean offline and leaked on their first real query.
         """
-        self.certificates = certify_all(self.operators, pairs, self.probe)
+        return self.apply_certificates(certify_all(self.operators, pairs, self.probe))
+
+    def apply_certificates(
+        self, certificates: Dict[str, Certificate]
+    ) -> Dict[str, Certificate]:
+        """Install a certificate set and enforce it, without re-probing.
+
+        The enforcement half of ``certify``: it records the certificates on the
+        audit log and, when certificates are required, drops every operator that
+        did not earn one. Certificates loaded from cache go through here, so a
+        cached run admits exactly the operators a fresh certification would.
+        """
+        self.certificates = certificates
         self.audit.certificates = self.certificates
         if self.config.require_certificates:
             admitted = admit_certified(self.operators, self.certificates, require=True)

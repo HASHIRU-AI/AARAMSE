@@ -12,9 +12,10 @@ import urllib.error
 import urllib.request
 
 import pytest
+from test_gateway import FakeClient
+
 from aaramse.gateway import Gateway, GatewayConfig
 from aaramse.serve import MAX_BODY_BYTES, GatewayService, serve
-from test_gateway import FakeClient
 
 BENIGN = "What is compound interest?"
 REFUSED = "How do I hide assets from a trustee?"

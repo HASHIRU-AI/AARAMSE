@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from aaramse.operators import OPERATOR_REGISTRY, build_operators, operator_factory
 from aaramse.operators.base import RewriteOperator, register_operator, tidy
 from aaramse.types import OperatorKind

@@ -11,6 +11,7 @@ import json
 import time
 
 import pytest
+
 from aaramse.localize import Localization
 from aaramse.serve import CONSOLE_PATHS, GatewayService
 from aaramse.types import (
@@ -160,8 +161,9 @@ def _wait(job: Job, timeout: float = 2.0) -> None:
 @pytest.fixture
 def service(tmp_path):
     """A service over the scripted model, so the suite stays offline."""
-    from aaramse.gateway import Gateway, GatewayConfig
     from test_gateway import FakeClient
+
+    from aaramse.gateway import Gateway, GatewayConfig
 
     config = GatewayConfig(audit_path=tmp_path / "audit.jsonl", localization_budget=20)
     return GatewayService(

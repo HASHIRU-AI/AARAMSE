@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import List
 
 import pytest
+
 from aaramse.invariants import ActionabilityScorer
 from aaramse.operators import operator_factory
 from aaramse.refusal import (
