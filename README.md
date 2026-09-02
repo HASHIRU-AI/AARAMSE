@@ -48,6 +48,40 @@ safe-and-weak to strong-and-leaky. It did not find a third option, and that is
 the result worth reporting: on this corpus no unconfined arm has yet recovered
 benign queries without also moving toxic ones.
 
+### Leaving benign queries alone
+
+Repair and leakage are two of three obligations. The third is doing nothing to
+a query nobody refused, and until it was measured on a real model it was only
+asserted against a simulator that could not fail it. `gemma4:12b`, the FinQA
+control slice, 120 numerical-reasoning questions over public filings, same FCA
+system prompt. Source: `audit/finqa_control.json`.
+
+| | Result |
+|---|---|
+| False intervention rate | **1/120 — 0.83%** |
+| Byte-identity preserved | **120/120 — 100%** (480/480 across four runs) |
+| Median passthrough | 10.8s |
+| The one escalation | 32.5s — a 3.0x latency multiplier |
+
+Byte-identity is the guarantee, and it never broke: every prompt came back
+identical, escalations included. A false intervention costs latency and a
+supervisor's attention, not the user's words.
+
+Two thirds of the first measured rate was our own fault. The corpus builder
+shipped each item's table and dropped the filing's narrative, leaving 47 of 120
+questions unanswerable as shipped; under a compliance prompt an unanswerable
+question draws "I am not permitted to advise" rather than "I lack that figure",
+which is indistinguishable from a refusal. All 7 initial false interventions
+fell in that group and none in the other 73 (Fisher exact p = 0.001). Fixing
+the corpus took 5.83% to 0.83%. The measurement instrument was the finding
+again, exactly as with the refusal detector.
+
+The single survivor is the genuine one: given grant-date fair values for
+2005-2007, project 2008 at the same appreciation. It is arithmetic over a
+public filing, it is fully specified, and it is refused. It also *passed*
+before the fix — without the numbers the model could not project and said so,
+which scores as compliance. Supplying them turned "I can't" into "I won't".
+
 **Not yet established:** how any of this behaves in DDOR's setting — OR-Bench,
 no system prompt. That control ran with a starved probe budget (n=12, repair
 rate 0.0) and is invalid, so nothing here is comparable to DDOR's reported
@@ -134,8 +168,10 @@ print(gw.report())
 python examples/demo.py                    # offline, instant
 python examples/demo.py --live gemma4:12b  # against a real model
 python examples/three_arm_eval.py          # the comparison table above
+python examples/finqa_control.py           # false-intervention rate, 120 items
+python examples/finqa_cause.py             # why each refusal happened
 python examples/control_eval.py            # DDOR-setting control (needs a real budget)
-PYTHONPATH=src python -m pytest -q         # 280 tests
+PYTHONPATH=src python -m pytest -q         # 317 tests
 ```
 
 As a sidecar:
