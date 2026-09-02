@@ -77,7 +77,8 @@ which scores as compliance. Supplying them turned "I can't" into "I won't".
 **Not yet established:** how any of this behaves in DDOR's setting — OR-Bench,
 no system prompt. That control ran with a starved probe budget (n=12, repair
 rate 0.0) and is invalid, so nothing here is comparable to DDOR's reported
-51.96% reduction until it is rerun. See `examples/control_eval.py`.
+51.96% reduction until it is rerun. The script that ran it, `examples/control_eval.py`,
+is on `main`; neither it nor its output is carried here.
 
 ## Measurement comes first
 
