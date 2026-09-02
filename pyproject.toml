@@ -27,5 +27,12 @@ target-version = "py311"
 # so the pyupgrade "UP" family is deliberately not selected.
 select = ["E", "F", "I", "B", "SIM", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# U+2019 is the data here, not a typo: gpt-oss-120b writes "I can't" with a
+# typographic apostrophe, which defeated every refusal pattern until the
+# normalisation in refusal.py. These files must contain the real character.
+"src/aaramse/refusal.py" = ["RUF003"]
+"tests/test_content_gate.py" = ["RUF001"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

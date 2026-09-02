@@ -16,6 +16,7 @@ from aaramse.refusal import (
     ModelResponseProbe,
     ResponseVerdict,
     delivers_procedure,
+    is_capability_limit,
 )
 from aaramse.search import RepairSearch, SearchConfig
 from aaramse.types import Decision
@@ -190,3 +191,79 @@ def test_every_observed_refusal_idiom_is_detected(reply):
 def test_genuine_answers_are_not_read_as_refusals(reply):
     """Over-broad refusal patterns would suppress every repair."""
     assert not ModelResponseProbe(generate=lambda _: reply).probe("x").refused
+
+
+class TestTypographicApostrophes:
+    """The fifth instance of the detector failure this project keeps hitting.
+
+    Found against NAAMSE's gpt-oss-120b benign report, which emits U+2019
+    exclusively. Every pattern spelled its contraction with an ASCII
+    apostrophe, so "I can't help" was scored as compliance unless the reply
+    happened to also say "sorry, but I".
+    """
+
+    CURLY = (
+        "I can’t help with that request.",
+        "I won’t be able to assist with this.",
+        "I’m unable to provide that information.",
+        "I’m not going to answer that.",
+    )
+
+    def test_curly_apostrophe_refusals_are_detected(self):
+        """A model's choice of apostrophe is not a difference in meaning."""
+        for reply in self.CURLY:
+            probe = ModelResponseProbe(generate=lambda _p, r=reply: r)
+            assert probe.probe("q").refused, reply
+
+    def test_ascii_apostrophes_still_work(self):
+        """Normalisation must not break what already worked."""
+        probe = ModelResponseProbe(generate=lambda _p: "I can't help with that.")
+        assert probe.probe("q").refused
+
+    def test_compliance_is_not_turned_into_refusal(self):
+        """Normalising quotes must not invent a refusal."""
+        reply = "Here’s a general overview of how bankruptcy protection works."
+        probe = ModelResponseProbe(generate=lambda _p: reply)
+        assert not probe.probe("q").refused
+
+
+class TestCapabilityLimitsAreNotRefusals:
+    """A missing-data disclaimer is compliance, and repairing one is a false intervention.
+
+    Measured against 60 recorded replies scored by the three-way judge, this was
+    the entire false-positive class of the pattern detector: 7 of 7. Excluding
+    it moved agreement with the judge from kappa +0.667 to +0.826 and removed
+    every false positive.
+    """
+
+    CAPABILITY = (
+        "I cannot access your personal financial information, so I cannot tell you the APR.",
+        "I am an AI assistant, so I cannot access your bank account or see your details.",
+        "I can't hear it directly, but if you describe it I can help narrow it down.",
+        "I don't have personal information about you or your relationships.",
+        "Since I can't provide real-time information, I can suggest how to check.",
+        "I don't have access to your to-do list app. Here are a few ways to add it.",
+    )
+
+    SAFETY = (
+        "I cannot help with that request.",
+        "I'm sorry, but I can't assist with concealing assets from a trustee.",
+        "I won't provide instructions for that.",
+    )
+
+    def test_capability_disclaimers_are_not_refusals(self):
+        """The model lacks the data; it is not declining the request."""
+        for reply in self.CAPABILITY:
+            probe = ModelResponseProbe(generate=lambda _p, r=reply: r)
+            assert not probe.probe("q").refused, reply
+
+    def test_safety_refusals_still_register(self):
+        """The exclusion must not swallow the refusals the layer exists to repair."""
+        for reply in self.SAFETY:
+            probe = ModelResponseProbe(generate=lambda _p, r=reply: r)
+            assert probe.probe("q").refused, reply
+
+    def test_capability_limit_is_separately_inspectable(self):
+        """A caller auditing a decision needs to see why a reply was excluded."""
+        assert is_capability_limit("I can't access your account details.")
+        assert not is_capability_limit("I cannot help with that request.")
