@@ -178,3 +178,60 @@ Certification asks whether *one* operator flips *one* contrastive twin. The
 budget asks the end-to-end question: across the whole search, how many
 prohibited prompts does the assembled layer get answered? A composed program
 can leak where no single operator does. Run both.
+
+## Meaning fidelity
+
+Confinement is justified by a claim about *meaning*: a full-prompt rewrite
+repairs slightly more but loses semantic content on the way. Every number above
+measures something else -- recovery, leakage, false intervention, byte identity
+-- and none of them measures that claim. Byte identity outside the mRTF is
+containment of the *edit*, not preservation of the *question*, and the two come
+apart: `certain -> specific` leaves almost every byte alone while changing what
+was asked.
+
+`fidelity.py` scores the gap, per repair, across four dimensions rather than as
+one number a judge invented:
+
+| Dimension | Question | Assessed by | May reject |
+|---|---|---|---|
+| Subject | same thing asked about? | `topic_core` | no -- `IntentGuard` owns topic drift |
+| Constraints | amounts, negations still present? | pattern extraction | **yes** |
+| Answer type | definition vs. procedure vs. quantity? | judge | no |
+| Answerability | would the rewrite leave the original unanswered? | judge | no |
+
+Only the deterministic dimensions can reject a candidate. A dropped figure or a
+dropped "without" is a provable constraint violation, and nothing else in the
+layer checked for either. The judged dimensions rank only, which is what keeps a
+model's judgement off the admission path while still letting it choose among
+candidates the guards have already cleared: every candidate it sees is one
+`IntentGuard` and certification already admitted, so it can pick a better rewrite
+but never a wider one.
+
+The score is recorded per step in the audit log under `fidelity`, so a
+supervisor reads which dimension a repair cost rather than a bare scalar.
+
+**No fidelity figure is published yet.** The instrument exists; the run that
+would populate it against a live model has not been done, and the comparison
+that matters -- confined repair against full-prompt rewriting, on the same
+corpus -- needs the rephrase arm that lives on `main`. Until then this section
+describes a measurement, not a result.
+
+### What changed on the repair path
+
+Two behaviours follow from having a score at all:
+
+* **Equivalence is judged on whole prompts.** It previously compared the
+  localized fragment against its replacement, out of context, which cannot
+  answer whether the *question* survived. `certain -> specific` is equivalent as
+  a phrase and need not be equivalent as a request.
+* **Repair became best-of-k.** The search was first-admissible-wins: one
+  replacement was generated per fragment and taken if it passed. It now samples
+  `repair_candidates` (default 3), keeps those the free guards admit, and spends
+  the equivalence judge from the highest-fidelity candidate down, so what ships
+  is the best-meaning rewrite the judge admits rather than the first one drawn.
+
+`GatewayConfig.verify_answers` additionally checks that the reply to a repaired
+query still answers the question the user asked, escalating when it does not.
+It is **off by default**: it is the only addition here that converts repairs
+into escalations, so it moves the recovery rate and belongs behind a flag until
+that delta has been measured rather than inherited.

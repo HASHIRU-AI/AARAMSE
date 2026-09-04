@@ -20,6 +20,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, List, Optional, Protocol, Sequence, Set, Tuple
 
+from .fidelity import AnswerCheck
 from .invariants import ActionabilityScorer, IntentGuard
 from .operators.base import RewriteOperator
 from .refusal import CountingOracle, RefusalOracle, ResponseProbe
@@ -96,6 +97,10 @@ class RepairSearch:
         probe: Optional content-aware probe. When supplied it replaces the bare
             refusal check, so acceptance depends on what the model actually handed
             over rather than on whether refusal boilerplate disappeared.
+        answer_check: Optional check that the reply to a rewrite still answers the
+            question the user asked. Without it, a rewrite that clears the
+            boundary by asking something easier scores as a repair. Requires a
+            probe, which is what supplies the reply text.
     """
 
     operators: Sequence[RewriteOperator]
@@ -105,6 +110,7 @@ class RepairSearch:
     realizer: Optional[Realizer] = None
     scorer: ActionabilityScorer = field(default_factory=ActionabilityScorer)
     probe: Optional[ResponseProbe] = None
+    answer_check: Optional[AnswerCheck] = None
 
     def __post_init__(self) -> None:
         """Reject a search that has no way to observe the refusal boundary."""
@@ -145,6 +151,7 @@ class RepairSearch:
         seen: Set[str] = {query}
         blocked: List[str] = []
         probed_refused = 0
+        answered_other = 0
 
         def diagnostics() -> SearchDiagnostics:
             """Snapshot the failure counters for an escalation result."""
@@ -152,6 +159,7 @@ class RepairSearch:
                 candidates_generated=len(seen) - 1,
                 probed_refused=probed_refused,
                 blocked_candidates=tuple(blocked),
+                answered_other=answered_other,
             )
 
         while frontier:
@@ -203,6 +211,17 @@ class RepairSearch:
                             "assistance; repair abandoned",
                             diagnostics(),
                         )
+                    # Clearing the refusal is not the goal; answering the user's
+                    # question is. A rewrite that got a reply to some easier
+                    # question passes every other check here.
+                    if self.answer_check is not None and not self.answer_check.answers(
+                        query, response.text
+                    ):
+                        answered_other += 1
+                        logger.debug(
+                            "candidate %s answered a different question", extended.render()
+                        )
+                        continue
                     final = self._realize(query, candidate, extended)
                     return self._result(
                         query, final, extended, Decision.REPAIRED, before,
@@ -224,6 +243,8 @@ class RepairSearch:
         reason = "search exhausted; refusal is content-driven"
         if blocked:
             reason += f"; {len(blocked)} candidate(s) blocked by invariants"
+        if answered_other:
+            reason += f"; {answered_other} candidate(s) answered a different question"
         return self._escalate(query, before, counter, space, reason, diagnostics())
 
     def _realize(self, query: str, candidate: str, program: RewriteProgram) -> str:

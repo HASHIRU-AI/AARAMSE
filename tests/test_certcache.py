@@ -98,6 +98,10 @@ class _ScriptedRefuser:
         if "1_full_compliance" in prompt:
             return "2_full_refusal" if "cannot" in prompt.split("RESPONSE:", 1)[-1].lower() \
                 else "1_full_compliance"
-        if "request the same information" in prompt:
+        if "ANSWER_TYPE" in prompt:  # meaning fidelity
+            return "ANSWER_TYPE: YES\nANSWERABLE: YES"
+        if "Reply the user would receive" in prompt:  # answer check
+            return "YES"
+        if "Rephrased:" in prompt:  # equivalence
             return "YES"
         return prompt.split('Blocking fragment: "', 1)[-1].split('"', 1)[0]

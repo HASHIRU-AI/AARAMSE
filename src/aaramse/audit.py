@@ -55,6 +55,22 @@ def _localizations(result: RepairResult) -> List[Dict[str, Any]]:
     return out
 
 
+def _fidelity(result: RepairResult) -> List[Dict[str, Any]]:
+    """Extract what each step cost the question, for the steps that scored it.
+
+    Recorded per step rather than as one number for the program: a supervisor
+    asking why a rewrite shipped needs the dimension that moved, and which
+    operator moved it.
+    """
+    out: List[Dict[str, Any]] = []
+    for step in result.program.steps:
+        report = step.fidelity
+        if report is None:
+            continue
+        out.append({"operator": step.operator, **report.to_dict()})
+    return out
+
+
 def _digest(previous: str, payload: Mapping[str, Any]) -> str:
     """Return the chained hash for a payload following `previous`."""
     body = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
@@ -106,6 +122,7 @@ class AuditLog:
             "features_before": result.actionability_before.as_dict(),
             "generalizations": [list(g) for g in result.program.generalizations()],
             "localizations": _localizations(result),
+            "fidelity": _fidelity(result),
             "dropped_clauses": list(result.program.dropped()),
             "oracle_calls": result.oracle_calls,
             "search_space": result.search_space,

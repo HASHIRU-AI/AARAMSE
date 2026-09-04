@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from aaramse.equivalence import SemanticEquivalence
+from aaramse.fidelity import MeaningFidelity
 from aaramse.targeted import TargetedConfig, TargetedRepair
 
 PROMPT = (
@@ -100,3 +101,111 @@ def test_localization_is_exposed_for_audit():
     assert op.last_localization is not None
     assert op.last_localization.text == "hide assets"
     assert op.last_localization.tests > 0
+
+
+# --- meaning fidelity: whole-prompt equivalence and best-of-k ranking ---
+
+
+def cycling(*replacements: str):
+    """Generator double returning each replacement once, then repeating the last."""
+    remaining = list(replacements)
+
+    def generate(_p: str) -> str:
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    return generate
+
+
+def test_equivalence_is_judged_on_the_whole_prompt():
+    """Fragment-level equivalence cannot see the question it is embedded in.
+
+    `certain -> specific` passes any fragment-level check; whether the *question*
+    still means the same thing is only answerable with the prompt in hand.
+    """
+    seen: list[str] = []
+
+    def judge(prompt: str) -> str:
+        seen.append(prompt)
+        return "YES"
+
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda _p: "protect assets lawfully",
+        equivalence=SemanticEquivalence(generate=judge),
+    )
+    op.apply(PROMPT)
+    assert seen, "equivalence judge was never consulted"
+    assert "university dissertation" in seen[0]
+
+
+def test_best_of_k_prefers_the_higher_fidelity_candidate():
+    """Given two admissible replacements, the one that keeps more meaning wins."""
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=cycling("conceal holdings", "protect assets lawfully"),
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+        config=TargetedConfig(candidates=2),
+    )
+    result = op.apply(PROMPT)
+    assert result is not None
+    # "conceal holdings" drops the domain term "assets"; the other keeps it.
+    assert "protect assets lawfully" in result.after
+
+
+def test_replacement_dropping_a_quantity_is_rejected():
+    """A dropped figure changes the answer, so it never reaches the model.
+
+    The figure has to sit *inside* the localized fragment to be at risk at all:
+    confinement already guarantees everything outside it survives byte-identical.
+    """
+    prompt = "How do I hide $50,000 from a trustee?"
+    op = TargetedRepair(
+        refuses=lambda t: "hide" in t.lower() and "50,000" in t,
+        generate=lambda _p: "protect holdings",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+    )
+    assert op.apply(prompt) is None
+    assert any("quantities" in reason for _, reason in op.rejected)
+
+
+def test_replacement_dropping_a_negation_is_rejected():
+    """Losing 'without' inverts the question it was scoping."""
+    prompt = "How do I move assets without notifying a trustee?"
+    op = TargetedRepair(
+        refuses=lambda t: "without notifying" in t.lower(),
+        generate=lambda _p: "while notifying",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+    )
+    assert op.apply(prompt) is None
+    assert any("negation" in reason for _, reason in op.rejected)
+
+
+def test_fidelity_report_rides_along_for_the_audit_log():
+    """A supervisor reads which dimension the repair cost, not a bare score."""
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda _p: "protect assets lawfully",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+    )
+    result = op.apply(PROMPT)
+    assert result is not None
+    assert result.fidelity is not None
+    assert result.fidelity.score == 1.0
+
+
+def test_identical_candidates_are_generated_once_each_but_judged_once():
+    """A deterministic model returns k copies; only one needs judging."""
+    judged: list[str] = []
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda _p: "protect assets lawfully",
+        equivalence=SemanticEquivalence(generate=lambda p: judged.append(p) or "YES"),
+        fidelity=MeaningFidelity(),
+        config=TargetedConfig(candidates=3),
+    )
+    assert op.apply(PROMPT) is not None
+    assert len(judged) == 1

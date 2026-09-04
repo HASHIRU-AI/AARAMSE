@@ -89,3 +89,49 @@ def test_escalation_records_serialized_diagnostics(tmp_path, search, operators, 
     assert set(diag) == {"candidates_generated", "probed_refused", "blocked_candidates"}
     assert isinstance(diag["blocked_candidates"], list)
     assert log.verify() is None
+
+
+def test_fidelity_is_recorded_per_step(tmp_path):
+    """A supervisor reads which meaning dimension a repair cost, not a bare score."""
+    from aaramse.audit import AuditLog
+    from aaramse.fidelity import FidelityReport
+    from aaramse.types import (
+        ActionabilityProfile,
+        Decision,
+        OperatorApplication,
+        RepairResult,
+        RewriteProgram,
+    )
+
+    report = FidelityReport(lost_terms=("annuity",), answer_type_preserved=True, answerable=True)
+    step = OperatorApplication(
+        operator="TARGETED_REPAIR", before="a", after="b", fidelity=report
+    )
+    result = RepairResult(
+        query="a",
+        rewritten="b",
+        program=RewriteProgram((step,)),
+        decision=Decision.REPAIRED,
+        refusal_margin=1,
+        actionability_before=ActionabilityProfile(0.0, ()),
+        actionability_after=ActionabilityProfile(0.0, ()),
+        oracle_calls=1,
+        search_space=1,
+    )
+
+    log = AuditLog(tmp_path / "audit.jsonl")
+    log.append(result)
+    recorded = next(iter(log.read()))["fidelity"]
+
+    assert recorded[0]["operator"] == "TARGETED_REPAIR"
+    assert recorded[0]["lost_terms"] == ["annuity"]
+    assert recorded[0]["score"] == 0.75
+
+
+def test_records_without_fidelity_carry_an_empty_list(tmp_path, search):
+    """Operators that never scored meaning must not fabricate a score."""
+    from aaramse.audit import AuditLog
+
+    log = AuditLog(tmp_path / "audit.jsonl")
+    log.append(search.repair("What is compound interest?"))
+    assert next(iter(log.read()))["fidelity"] == []

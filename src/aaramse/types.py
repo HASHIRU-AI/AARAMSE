@@ -11,6 +11,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover
+    from .fidelity import FidelityReport
     from .localize import Localization
 
 __all__ = [
@@ -76,6 +77,9 @@ class OperatorApplication:
         localization: The delta-debugging result, when the operator localized a
             refusal trigger before editing. This is the explainability record a
             supervisor reads: which fragment was changed, and at what cost.
+        fidelity: What the rewrite cost the question, dimension by dimension.
+            Set when the operator ranked candidates on meaning; None when no
+            fidelity scorer was configured.
     """
 
     operator: str
@@ -84,6 +88,7 @@ class OperatorApplication:
     generalizations: Tuple[Tuple[str, str], ...] = ()
     dropped: Tuple[str, ...] = ()
     localization: Optional["Localization"] = None
+    fidelity: Optional["FidelityReport"] = None
 
 
 @dataclass(frozen=True)
@@ -136,17 +141,23 @@ class SearchDiagnostics:
       reached the model (the guard is the binding constraint).
     - ``probed_refused > 0`` -- candidates cleared the guard and were put to the
       model, which still refused (the replacements were too weak to flip it).
+    - ``answered_other > 0`` with no refusals -- the model answered, but a reply
+      to the rewrite did not answer the question the user asked. The rewrite
+      cleared the boundary by changing the question, which is not a repair.
 
     Attributes:
         candidates_generated: Distinct rewrite candidates enumerated.
         probed_refused: Candidates that passed the guard but the model refused.
         blocked_candidates: ``"<program>: <invariant reason>"`` for each candidate
             an invariant rejected before it reached the model.
+        answered_other: Candidates the model answered where the reply did not
+            answer the original question. Zero unless an answer check is wired.
     """
 
     candidates_generated: int
     probed_refused: int
     blocked_candidates: Tuple[str, ...] = ()
+    answered_other: int = 0
 
     @property
     def failure_class(self) -> str:
@@ -162,13 +173,17 @@ class SearchDiagnostics:
             ``"no_candidate"`` -- nothing applicable was generated.
             ``"guard_blocked"`` -- candidates were generated but only invariant
                 rejections occurred; none reached the model.
+            ``"answered_different"`` -- candidates were answered, but about a
+                different question than the one asked.
             ``"model_upheld"`` -- at least one candidate reached the model and
                 the refusal held.
         """
         if self.candidates_generated == 0:
             return "no_candidate"
-        if self.probed_refused == 0 and self.blocked_candidates:
+        if self.probed_refused == 0 and not self.answered_other and self.blocked_candidates:
             return "guard_blocked"
+        if self.answered_other and not self.probed_refused:
+            return "answered_different"
         return "model_upheld"
 
 

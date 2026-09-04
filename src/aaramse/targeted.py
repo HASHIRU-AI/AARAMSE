@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 from .equivalence import SemanticEquivalence
+from .fidelity import FidelityReport, MeaningFidelity
 from .invariants import ActionabilityScorer, IntentGuard
 from .localize import Localization, localize_mrtf
 from .operators.base import RewriteOperator, register_operator
@@ -51,11 +52,30 @@ class TargetedConfig:
         max_localization_tests: Oracle-query cap for delta debugging.
         max_replacement_ratio: Reject replacements far longer than the fragment.
         require_equivalence: Refuse to act without an intent-equivalence judge.
+        candidates: How many replacements to sample per fragment before choosing.
+            One generation call each, on a fragment rather than a whole prompt,
+            so the cost is small next to localization; the equivalence judge
+            still runs once, on the best-ranked candidate that passes it.
     """
 
     max_localization_tests: int = 40
     max_replacement_ratio: float = 3.0
     require_equivalence: bool = True
+    candidates: int = 3
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One spliced rewrite that already cleared the free guards."""
+
+    after: str
+    substitutions: Tuple[Tuple[str, str], ...]
+    fidelity: Optional[FidelityReport]
+
+    @property
+    def rank(self) -> float:
+        """Meaning preserved, or 0.0 when nothing scored this candidate."""
+        return self.fidelity.score if self.fidelity is not None else 0.0
 
 
 @register_operator
@@ -73,10 +93,12 @@ class TargetedRepair(RewriteOperator):
         equivalence: Optional[SemanticEquivalence] = None,
         config: Optional[TargetedConfig] = None,
         guard: Optional[IntentGuard] = None,
+        fidelity: Optional[MeaningFidelity] = None,
     ) -> None:
         self._refuses = refuses
         self._generate = generate
         self._equivalence = equivalence
+        self._fidelity = fidelity
         self._config = config or TargetedConfig()
         self._guard = guard or IntentGuard()
         self._scorer = ActionabilityScorer()
@@ -95,7 +117,7 @@ class TargetedRepair(RewriteOperator):
         return self.configured and len(text.split()) >= 3
 
     def apply(self, text: str) -> Optional[OperatorApplication]:
-        """Localize the trigger, replace it, and splice the result back in."""
+        """Localize the trigger, sample replacements, and splice the best one back in."""
         if self._refuses is None or self._generate is None:
             return None
 
@@ -106,9 +128,6 @@ class TargetedRepair(RewriteOperator):
         if localization is None or not localization.text:
             self.rejected.append((text, "no mRTF localized"))
             return None
-
-        candidate = text
-        substitutions: List[Tuple[str, str]] = []
 
         # Contiguous mRTFs are spliced whole; otherwise each fragment is
         # replaced on its own so the untouched remainder stays exact either way.
@@ -121,29 +140,80 @@ class TargetedRepair(RewriteOperator):
             self.rejected.append((localization.text, "mRTF not found verbatim in prompt"))
             return None
 
-        for target in targets:
-            replacement = self._replacement(text, target)
-            if replacement is None:
-                continue
-            candidate = candidate.replace(target, replacement, 1)
-            substitutions.append((target, replacement))
-
-        if not substitutions or candidate == text:
+        candidates = self._candidates(text, targets)
+        if not candidates:
             self.rejected.append((localization.text, "no admissible replacement produced"))
             return None
 
-        reason = self._reject_reason(text, candidate)
-        if reason:
-            self.rejected.append((candidate, reason))
-            return None
+        # Rank on meaning, then spend the equivalence judge from the top down, so
+        # what ships is the best-meaning rewrite the judge admits rather than the
+        # first one that happened to be generated.
+        for candidate in sorted(candidates, key=lambda c: -c.rank):
+            if not self._equivalent(text, candidate.after):
+                self.rejected.append(
+                    (candidate.after, "rewrite not equivalent to the original question")
+                )
+                continue
+            return OperatorApplication(
+                operator=self.name,
+                before=text,
+                after=candidate.after,
+                generalizations=candidate.substitutions,
+                localization=localization,
+                fidelity=candidate.fidelity,
+            )
+        return None
 
-        return OperatorApplication(
-            operator=self.name,
-            before=text,
-            after=candidate,
-            generalizations=tuple(substitutions),
-            localization=localization,
-        )
+    def _candidates(self, text: str, targets: List[str]) -> List[_Candidate]:
+        """Sample replacements and keep the ones the free guards admit.
+
+        Only local computation and short fragment-level generations happen here.
+        The expensive checks -- the equivalence judge, and the re-probe the
+        search runs afterwards -- are spent later and only on survivors.
+        """
+        kept: List[_Candidate] = []
+        seen: set[str] = set()
+
+        for _ in range(max(1, self._config.candidates)):
+            candidate = text
+            substitutions: List[Tuple[str, str]] = []
+            for target in targets:
+                replacement = self._replacement(text, target)
+                if replacement is None:
+                    continue
+                candidate = candidate.replace(target, replacement, 1)
+                substitutions.append((target, replacement))
+
+            # A deterministic model returns the same replacement every round;
+            # judging that candidate more than once buys nothing.
+            if not substitutions or candidate == text or candidate in seen:
+                continue
+            seen.add(candidate)
+
+            reason = self._reject_reason(text, candidate)
+            if reason:
+                self.rejected.append((candidate, reason))
+                continue
+
+            report = self._fidelity.assess(text, candidate) if self._fidelity else None
+            if report is not None and report.blocking_loss is not None:
+                self.rejected.append((candidate, report.blocking_loss))
+                continue
+
+            kept.append(_Candidate(candidate, tuple(substitutions), report))
+
+        return kept
+
+    def _equivalent(self, original: str, candidate: str) -> bool:
+        """Ask the intent judge whether the rewritten *question* still holds.
+
+        Judged on whole prompts. A fragment compared out of context cannot
+        answer the question that matters: `certain -> specific` is equivalent as
+        a phrase and need not be equivalent as a request.
+        """
+        if self._equivalence is None:
+            return True
+        return self._equivalence.equivalent(original, candidate)
 
     def _replacement(self, prompt: str, fragment: str) -> Optional[str]:
         """Ask the model for a neutral, equivalent replacement for one fragment."""
@@ -163,10 +233,6 @@ class TargetedRepair(RewriteOperator):
         cap = max(3, len(fragment.split()) * self._config.max_replacement_ratio)
         if len(replacement.split()) > cap:
             self.rejected.append((replacement, "replacement far longer than fragment"))
-            return None
-        equiv = self._equivalence
-        if equiv is not None and not equiv.equivalent(fragment, replacement):
-            self.rejected.append((replacement, "fragment replacement not equivalent"))
             return None
         return replacement
 

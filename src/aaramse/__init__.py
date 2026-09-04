@@ -17,6 +17,7 @@ from .certification import (
 )
 from .client import CachingClient, ModelClient, OllamaClient
 from .equivalence import SemanticEquivalence
+from .fidelity import AnswerCheck, FidelityReport, MeaningFidelity
 from .gateway import Gateway, GatewayConfig, JudgedProbe
 from .invariants import ActionabilityScorer, IntentGuard, topic_core
 from .operators import FrameConfig, build_operators
@@ -31,6 +32,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "ActionabilityScorer",
+    "AnswerCheck",
     "AnthropicClient",
     "AuditLog",
     "BudgetExceeded",
@@ -39,6 +41,7 @@ __all__ = [
     "Certificate",
     "ContrastivePair",
     "Decision",
+    "FidelityReport",
     "FrameConfig",
     "Gateway",
     "GatewayConfig",
@@ -47,6 +50,7 @@ __all__ = [
     "InterventionReport",
     "JudgedProbe",
     "LeakageBudget",
+    "MeaningFidelity",
     "ModelClient",
     "ModelRefusalOracle",
     "OllamaClient",

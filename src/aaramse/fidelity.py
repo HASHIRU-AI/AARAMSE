@@ -1,0 +1,352 @@
+"""Graded meaning fidelity: what a rewrite cost the question.
+
+The layer's justification for confining edits to the localized fragment is a
+claim about *meaning* -- a full-prompt rewrite repairs slightly more but loses
+semantic content along the way. Until now nothing here measured that. Byte
+identity outside the mRTF is containment of the edit, not preservation of the
+question, and the two come apart: `certain -> specific` leaves 95% of the bytes
+untouched while changing what was asked.
+
+This module scores the difference between the query as received and the query
+as rewritten, and it is deliberately *not* a scalar handed down by a model. A
+number a judge invents is neither stable across calls nor defensible in an
+audit record. Instead the score decomposes into named dimensions, so a
+supervisor reads "subject and answer type preserved, qualifier 'without
+penalty' lost" rather than `0.73`.
+
+Where the check runs decides who may block:
+
+* **Deterministic dimensions** -- quantities and negations -- are precise, so
+  losing one is a provable constraint violation and may reject a candidate.
+  Nothing else in the layer checks them, and losing "without penalty" from a
+  withdrawal question inverts the answer.
+* **Judged dimensions** -- answer type and answerability -- rank only. They
+  never admit or reject, which is what keeps a model's judgement off the
+  safety path while still letting it choose among candidates the guards have
+  already cleared.
+
+Topic drift is priced here but not blocked here: `IntentGuard` already owns
+that decision, and two components blocking on one signal would make the reason
+a supervisor sees depend on evaluation order.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Callable, Dict, FrozenSet, List, Optional, Tuple
+
+from .invariants import strip_frame, topic_core
+
+__all__ = [
+    "ANSWER_CHECK_PROMPT",
+    "FIDELITY_PROMPT",
+    "AnswerCheck",
+    "FidelityReport",
+    "MeaningFidelity",
+    "extract_negations",
+    "extract_quantities",
+]
+
+logger = logging.getLogger(__name__)
+
+FIDELITY_PROMPT = """You are checking whether a rewritten question still serves the \
+original information need.
+
+Original:  {original}
+Rewritten: {rewritten}
+
+Answer two questions.
+
+ANSWER_TYPE -- does the rewritten question call for the same *kind* of answer as the \
+original? A definition, a procedure, a recommendation and a quantity are different kinds. \
+Answer NO if the rewrite turned one into another.
+
+ANSWERABLE -- would a complete answer to the rewritten question leave the original \
+question answered? Answer NO if something the original asked for would still be missing.
+
+Different wording or level of generality is fine, and is not by itself a NO.
+
+Reply in exactly this format, with no other text:
+ANSWER_TYPE: YES or NO
+ANSWERABLE: YES or NO"""
+
+# Percentages are matched before bare numbers so that "7%" is one quantity
+# rather than the number 7 with a stray sign.
+_PERCENT_RE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*%")
+_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+# Markers whose disappearance inverts or unbounds the question. Scoping a
+# question is what these do, and a rewrite that drops one is answering something
+# the user did not ask.
+_NEGATION_TERMS: Tuple[str, ...] = (
+    "without", "excluding", "except", "not", "no", "never", "neither", "nor",
+    "besides", "minus", "aside from", "other than", "rather than", "instead of",
+    "avoid", "avoiding", "exclude", "omitting",
+)
+
+_NEGATION_RE = re.compile(
+    r"\b(" + "|".join(term.replace(" ", r"\s+") for term in _NEGATION_TERMS) + r")\b",
+    re.IGNORECASE,
+)
+
+_ANSWER_TYPE_RE = re.compile(r"ANSWER_TYPE\s*:\s*(YES|NO)", re.IGNORECASE)
+_ANSWERABLE_RE = re.compile(r"ANSWERABLE\s*:\s*(YES|NO)", re.IGNORECASE)
+
+
+def extract_quantities(text: str) -> FrozenSet[str]:
+    """Extract the numeric quantities a question is scoped by.
+
+    Currency symbols and thousands separators are discarded so that "$1,200"
+    and "1200 dollars" compare equal; a rewrite that swaps the notation has not
+    lost the constraint.
+
+    Args:
+        text: Query text, with any deployer frame still attached.
+
+    Returns:
+        Normalised quantity tokens, percentages keeping their sign.
+    """
+    payload = strip_frame(text)
+    found = {
+        match.group(0).replace(",", "").replace(" ", "")
+        for match in _PERCENT_RE.finditer(payload)
+    }
+    remainder = _PERCENT_RE.sub(" ", payload)
+    found |= {match.group(0).replace(",", "") for match in _NUMBER_RE.finditer(remainder)}
+    return frozenset(found)
+
+
+def extract_negations(text: str) -> FrozenSet[str]:
+    """Extract the negation and exclusion markers scoping a question.
+
+    Args:
+        text: Query text, with any deployer frame still attached.
+
+    Returns:
+        The markers present, lowercased and whitespace-normalised.
+    """
+    payload = strip_frame(text)
+    return frozenset(
+        re.sub(r"\s+", " ", match.group(1).lower()) for match in _NEGATION_RE.finditer(payload)
+    )
+
+
+@dataclass(frozen=True)
+class FidelityReport:
+    """What one rewrite cost the question, dimension by dimension.
+
+    Attributes:
+        lost_terms: Domain vocabulary present in the original and gone from the
+            rewrite. Priced, not blocked -- `IntentGuard` owns topic drift.
+        lost_quantities: Numeric constraints dropped by the rewrite. Blocking.
+        lost_negations: Negation or exclusion markers dropped. Blocking.
+        answer_type_preserved: Judge verdict on whether the rewrite still calls
+            for the same kind of answer. None when no judge was consulted.
+        answerable: Judge verdict on whether answering the rewrite would leave
+            the original answered. None when no judge was consulted.
+    """
+
+    lost_terms: Tuple[str, ...] = ()
+    lost_quantities: Tuple[str, ...] = ()
+    lost_negations: Tuple[str, ...] = ()
+    answer_type_preserved: Optional[bool] = None
+    answerable: Optional[bool] = None
+
+    @property
+    def blocking_loss(self) -> Optional[str]:
+        """Return why this rewrite must be rejected, or None when admissible.
+
+        Only the deterministic dimensions can produce a rejection. A judged
+        dimension coming back negative lowers the score and nothing more.
+        """
+        if self.lost_quantities:
+            return f"drops quantities {list(self.lost_quantities)}"
+        if self.lost_negations:
+            return f"drops negation {list(self.lost_negations)}"
+        return None
+
+    @property
+    def dimensions(self) -> Tuple[Tuple[str, bool], ...]:
+        """Return each assessed dimension paired with whether it was preserved."""
+        assessed: List[Tuple[str, bool]] = [
+            ("subject", not self.lost_terms),
+            ("constraints", not (self.lost_quantities or self.lost_negations)),
+        ]
+        if self.answer_type_preserved is not None:
+            assessed.append(("answer_type", self.answer_type_preserved))
+        if self.answerable is not None:
+            assessed.append(("answerable", self.answerable))
+        return tuple(assessed)
+
+    @property
+    def score(self) -> float:
+        """Return the fraction of assessed dimensions the rewrite preserved.
+
+        Scores are comparable only among candidates assessed the same way: a
+        two-dimension score and a four-dimension score do not mean the same
+        thing. Search ranks within a single query, where they always match.
+        """
+        assessed = self.dimensions
+        if not assessed:
+            return 0.0
+        return sum(1 for _, preserved in assessed if preserved) / len(assessed)
+
+    def to_dict(self) -> Dict[str, object]:
+        """Return a JSON-serialisable view for the audit log."""
+        return {
+            "score": self.score,
+            "lost_terms": list(self.lost_terms),
+            "lost_quantities": list(self.lost_quantities),
+            "lost_negations": list(self.lost_negations),
+            "answer_type_preserved": self.answer_type_preserved,
+            "answerable": self.answerable,
+        }
+
+
+@dataclass
+class MeaningFidelity:
+    """Scores how much of a question survived its rewrite.
+
+    Attributes:
+        generate: Completion callable for the judged dimensions. When None,
+            only the deterministic dimensions are assessed and the report
+            carries None for the other two.
+        fail_closed: Treat an unparseable verdict as "not preserved". This can
+            only lower a score, never reject a candidate.
+    """
+
+    generate: Optional[Callable[[str], str]] = None
+    fail_closed: bool = True
+    _cache: Dict[Tuple[str, str], Tuple[bool, bool]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+
+    def assess(self, original: str, rewritten: str) -> FidelityReport:
+        """Score what the rewrite cost the original question.
+
+        The deterministic dimensions run first and short-circuit the judge: a
+        candidate already rejected on a provable constraint loss is not worth a
+        model call.
+
+        Args:
+            original: The user's query as received.
+            rewritten: The candidate replacing it.
+
+        Returns:
+            The per-dimension report.
+        """
+        lost_terms = tuple(sorted(topic_core(original) - topic_core(rewritten)))
+        lost_quantities = tuple(
+            sorted(extract_quantities(original) - extract_quantities(rewritten))
+        )
+        lost_negations = tuple(
+            sorted(extract_negations(original) - extract_negations(rewritten))
+        )
+
+        report = FidelityReport(
+            lost_terms=lost_terms,
+            lost_quantities=lost_quantities,
+            lost_negations=lost_negations,
+        )
+        if report.blocking_loss is not None or self.generate is None:
+            return report
+
+        answer_type, answerable = self._judge(original, rewritten)
+        return FidelityReport(
+            lost_terms=lost_terms,
+            lost_quantities=lost_quantities,
+            lost_negations=lost_negations,
+            answer_type_preserved=answer_type,
+            answerable=answerable,
+        )
+
+    def _judge(self, original: str, rewritten: str) -> Tuple[bool, bool]:
+        """Ask for both judged dimensions in one call, and cache the verdict."""
+        key = (original, rewritten)
+        if key in self._cache:
+            return self._cache[key]
+
+        assert self.generate is not None
+        raw = self.generate(FIDELITY_PROMPT.format(original=original, rewritten=rewritten))
+        result = (
+            self._verdict(raw, _ANSWER_TYPE_RE, "answer_type"),
+            self._verdict(raw, _ANSWERABLE_RE, "answerable"),
+        )
+        self._cache[key] = result
+        return result
+
+    def _verdict(self, raw: str, pattern: "re.Pattern[str]", name: str) -> bool:
+        """Read one YES/NO verdict out of the reply, failing closed if absent."""
+        match = pattern.search(raw)
+        if match is None:
+            logger.warning("unparseable fidelity verdict for %s: %r", name, raw[:60])
+            return not self.fail_closed
+        return match.group(1).upper() == "YES"
+
+
+ANSWER_CHECK_PROMPT = """A user asked a question. A safety layer rewrote it before \
+sending it to an assistant, and the assistant produced the reply below.
+
+Original question: {original}
+
+Reply the user would receive:
+{reply}
+
+Does this reply answer the original question? Answer NO if it answers a related but \
+different question, or if it addresses only part of what was asked. Extra material \
+beyond the question is fine.
+
+Answer with exactly one word: YES or NO."""
+
+_YES_NO_RE = re.compile(r"\b(YES|NO)\b", re.IGNORECASE)
+
+
+@dataclass
+class AnswerCheck:
+    """Checks that a reply to the rewrite still answers the original question.
+
+    This is the one place meaning preservation is *observable* rather than
+    estimated: everything else compares two questions and infers, while this
+    reads what the user would actually receive.
+
+    It fails closed. An unparseable verdict escalates, which puts a human in
+    front of a query the model had already refused -- the cost is attention,
+    not a wrong answer.
+
+    Attributes:
+        generate: Completion callable used to ask for a verdict.
+        fail_closed: Treat an unparseable verdict as "did not answer".
+    """
+
+    generate: Callable[[str], str]
+    fail_closed: bool = True
+    _cache: Dict[Tuple[str, str], bool] = field(
+        default_factory=dict, init=False, repr=False
+    )
+
+    def answers(self, original: str, reply: str) -> bool:
+        """Return True when the reply addresses the question as asked.
+
+        Args:
+            original: The user's query as received, before any rewriting.
+            reply: What the model returned for the rewritten query.
+
+        Returns:
+            True when a user who asked `original` is served by `reply`.
+        """
+        key = (original, reply)
+        if key in self._cache:
+            return self._cache[key]
+
+        raw = self.generate(ANSWER_CHECK_PROMPT.format(original=original, reply=reply))
+        match = _YES_NO_RE.search(raw.strip())
+        if match is None:
+            logger.warning("unparseable answer-check verdict %r", raw[:60])
+            verdict = not self.fail_closed
+        else:
+            verdict = match.group(1).upper() == "YES"
+
+        self._cache[key] = verdict
+        return verdict

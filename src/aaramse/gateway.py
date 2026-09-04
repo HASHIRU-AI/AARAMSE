@@ -18,6 +18,7 @@ from .budget import BudgetVerdict, LeakageBudget, measure_leakage
 from .certification import Certificate, ContrastivePair, admit_certified, certify_all
 from .client import ModelClient
 from .equivalence import SemanticEquivalence
+from .fidelity import AnswerCheck, MeaningFidelity
 from .judge import ResponseClass, ThreeWayJudge
 from .operators import FrameAssert, FrameConfig
 from .operators.base import RewriteOperator
@@ -85,6 +86,14 @@ class GatewayConfig:
         audit_path: Where the tamper-evident log is written.
         max_depth: Maximum repair-program length.
         localization_budget: Delta-debugging probe cap per query.
+        repair_candidates: Replacements sampled per fragment before ranking them
+            on meaning. One short generation each; the equivalence judge still
+            runs once, on the best candidate it admits.
+        verify_answers: Check that the reply to a repaired query still answers
+            the question the user asked, escalating when it does not. Off by
+            default: it is the one addition here that turns repairs into
+            escalations, so it moves the recovery rate and belongs behind a flag
+            until that delta has been measured rather than inherited.
         require_certificates: Exclude operators without a passing certificate.
             Defaults to True: an uncertified operator is excluded, not trusted.
         leak_budget: How much induced leakage the deployer accepts on the
@@ -98,6 +107,8 @@ class GatewayConfig:
     audit_path: Path = Path("audit/gateway.jsonl")
     max_depth: int = 2
     localization_budget: int = 32
+    repair_candidates: int = 3
+    verify_answers: bool = False
     require_certificates: bool = True
     leak_budget: LeakageBudget = field(
         default_factory=LeakageBudget
@@ -135,13 +146,18 @@ class Gateway:
         judge = ThreeWayJudge(generate=lambda p: client.complete(p, 0.0, 24))
         probe = JudgedProbe(client=client, judge=judge)
         equivalence = SemanticEquivalence(generate=lambda p: client.complete(p, 0.0, 8))
+        fidelity = MeaningFidelity(generate=lambda p: client.complete(p, 0.0, 16))
 
         operators: List[RewriteOperator] = [
             TargetedRepair(
                 refuses=probe.refuses,
                 generate=lambda p: client.complete(p, 0.0, 40),
                 equivalence=equivalence,
-                config=TargetedConfig(max_localization_tests=config.localization_budget),
+                fidelity=fidelity,
+                config=TargetedConfig(
+                    max_localization_tests=config.localization_budget,
+                    candidates=config.repair_candidates,
+                ),
             ),
             FrameAssert(FrameConfig(config.deployer_name, config.authorisation_ref)),
         ]
@@ -150,6 +166,11 @@ class Gateway:
             operators=operators,
             probe=probe,
             config=SearchConfig(max_depth=config.max_depth, max_oracle_calls=64),
+            answer_check=(
+                AnswerCheck(generate=lambda p: client.complete(p, 0.0, 8))
+                if config.verify_answers
+                else None
+            ),
         )
         return cls(
             config=config, client=client, probe=probe,

@@ -41,12 +41,22 @@ class FakeClient(OllamaClient):
         return "Here is general information about the topic you asked about."
 
     def complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 60) -> str:
-        """Serve the judge, the equivalence check, and fragment rewriting."""
+        """Serve the judge, the meaning checks, and fragment rewriting.
+
+        Each branch keys on a phrase the corresponding prompt actually contains.
+        Dispatching on a phrase that is merely *about* the prompt is how the
+        equivalence branch went dead: every targeted candidate then scored
+        non-equivalent and the gateway fell back to FRAME_ASSERT unnoticed.
+        """
         self.calls += 1
         if "1_full_compliance" in prompt:  # judge
             target = prompt.split("RESPONSE:", 1)[-1]
             return "2_full_refusal" if "cannot help" in target else "1_full_compliance"
-        if "request the same information" in prompt:  # equivalence
+        if "ANSWER_TYPE" in prompt:  # meaning fidelity
+            return "ANSWER_TYPE: YES\nANSWERABLE: YES"
+        if "Reply the user would receive" in prompt:  # answer check
+            return "YES"
+        if "Rephrased:" in prompt:  # equivalence
             return "YES"
         return "protect assets lawfully"  # fragment replacement
 
@@ -152,3 +162,54 @@ def test_report_summarises_the_session(gateway):
     assert report["chain_intact"] is True
     assert report["model_calls"] > 0
     assert set(report["operators"]) == {"TARGETED_REPAIR", "FRAME_ASSERT"}
+
+
+def test_gateway_scores_meaning_fidelity_on_repairs(gateway):
+    """The shipped repair operator must be built with a fidelity scorer."""
+    from aaramse.targeted import TargetedRepair
+
+    targeted = next(op for op in gateway.operators if isinstance(op, TargetedRepair))
+    assert targeted._fidelity is not None
+
+
+def test_gateway_samples_multiple_repair_candidates(tmp_path):
+    """Best-of-k is configurable; k=1 cannot rank anything."""
+    from aaramse.targeted import TargetedRepair
+
+    config = GatewayConfig(audit_path=tmp_path / "a.jsonl", repair_candidates=4)
+    built = Gateway.build(config=config, client=FakeClient())
+    targeted = next(op for op in built.operators if isinstance(op, TargetedRepair))
+    assert targeted._config.candidates == 4
+
+
+def test_answer_verification_is_off_by_default():
+    """It converts repairs into escalations, so it lands opt-in and measured."""
+    assert GatewayConfig().verify_answers is False
+
+
+def test_answer_verification_can_be_enabled(tmp_path):
+    """Opting in wires the check onto the search's accept path."""
+    config = GatewayConfig(audit_path=tmp_path / "a.jsonl", verify_answers=True)
+    built = Gateway.build(config=config, client=FakeClient())
+    assert built.search.answer_check is not None
+
+
+def test_default_gateway_leaves_the_accept_path_alone(gateway):
+    assert gateway.search.answer_check is None
+
+
+def test_targeted_repair_reaches_the_audit_log_with_a_fidelity_score(gateway):
+    """The confined operator must actually run end to end, not silently lose.
+
+    Regression: the fake client dispatched the equivalence judge on a phrase the
+    prompt does not contain, so every targeted candidate was scored
+    non-equivalent and the gateway quietly fell back to FRAME_ASSERT. The
+    integration tests still passed, because a frame repairs the query too.
+    """
+    result = gateway.search.repair("How do I hide assets from my bankruptcy trustee?")
+    gateway.audit.append(result)
+
+    record = next(iter(gateway.audit.read()))
+    assert record["program"] == ["TARGETED_REPAIR"]
+    assert record["fidelity"][0]["operator"] == "TARGETED_REPAIR"
+    assert record["fidelity"][0]["score"] == 1.0
