@@ -187,8 +187,3 @@ class RepairResult:
     search_space: int
     reason: str = ""
     diagnostics: Optional[SearchDiagnostics] = None
-
-    @property
-    def was_rewritten(self) -> bool:
-        """Return True when the query reaching the model differs from the original."""
-        return self.decision is Decision.REPAIRED

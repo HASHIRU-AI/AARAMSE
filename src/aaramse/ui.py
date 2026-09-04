@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .types import Decision, RepairResult
+from .types import RepairResult
 
 __all__ = [
     "MAX_JOBS",
@@ -259,8 +259,3 @@ def baseline_of(probe: Any, query: str) -> Dict[str, Any]:
         "refused": getattr(label, "is_over_refusal", label.value == "full_refusal"),
         "text": getattr(probe, "answers", {}).get(query, ""),
     }
-
-
-def decision_is_intervention(decision: str) -> bool:
-    """Return True when the layer changed what reached the model."""
-    return decision in (Decision.REPAIRED.value, Decision.ESCALATED.value)

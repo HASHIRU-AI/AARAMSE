@@ -18,7 +18,7 @@ import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Tuple
 
 __all__ = ["JUDGE_PROMPT", "Judgement", "ResponseClass", "ThreeWayJudge"]
 
@@ -137,11 +137,3 @@ class ThreeWayJudge:
                 return label
         logger.warning("unparseable judge output %r; using %s", raw[:80], self.fallback.value)
         return self.fallback
-
-
-def over_refusal_rate(judgements: Dict[str, Judgement]) -> Optional[float]:
-    """Fraction of prompts denied outright, or None when there is nothing to score."""
-    if not judgements:
-        return None
-    refused = sum(1 for j in judgements.values() if j.label.is_over_refusal)
-    return refused / len(judgements)

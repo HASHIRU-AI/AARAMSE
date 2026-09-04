@@ -12,6 +12,17 @@ build/
 dist/
 *.egg-info/
 
+# Run outputs under audit/. The measured artifacts the docs cite --
+# finqa_*.{json,jsonl} and benign_adjudication.json -- stay tracked.
+audit/cert_cache.json
+audit/gateway.jsonl
+audit/gateway_demo.jsonl
+audit/demo_gateway.jsonl
+audit/verify_demo.jsonl
+audit/preflight.jsonl
+audit/adjudicated_repair.json
+audit/adjudicated_repair.jsonl
+
 # Local tooling state
 .claude/
 
