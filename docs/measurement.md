@@ -195,13 +195,21 @@ one number a judge invented:
 | Dimension | Question | Assessed by | May reject |
 |---|---|---|---|
 | Subject | same thing asked about? | `topic_core` | no -- `IntentGuard` owns topic drift |
-| Constraints | amounts, negations still present? | pattern extraction | **yes** |
+| Constraints | amounts and negations unchanged? | pattern extraction | **yes** |
 | Answer type | definition vs. procedure vs. quantity? | judge | no |
 | Answerability | would the rewrite leave the original unanswered? | judge | no |
 
-Only the deterministic dimensions can reject a candidate. A dropped figure or a
-dropped "without" is a provable constraint violation, and nothing else in the
-layer checked for either. The judged dimensions rank only, which is what keeps a
+Only the deterministic dimensions can reject a candidate. A changed figure or a
+changed "without" is a provable constraint violation, and nothing else in the
+layer checked for either.
+
+The constraint check is **symmetric**. Dropping "without penalty" widens the
+question; inventing a "$50,000" the user never wrote narrows it, and both are
+the rewrite answering something other than what was asked. The actionability
+lattice does not catch the second case: `401k` already matches the
+`specific_amount` feature and a feature scores at most once, so appending a
+concrete figure leaves the score unmoved and `IntentGuard` admits it. That gap
+is the reason this check exists rather than being folded into the lattice. The judged dimensions rank only, which is what keeps a
 model's judgement off the admission path while still letting it choose among
 candidates the guards have already cleared: every candidate it sees is one
 `IntentGuard` and certification already admitted, so it can pick a better rewrite

@@ -138,19 +138,59 @@ def test_equivalence_is_judged_on_the_whole_prompt():
     assert "university dissertation" in seen[0]
 
 
+def _fidelity_judge(poor: str):
+    """Score any candidate containing `poor` down on both judged dimensions.
+
+    Ranking has to be exercised on the *judged* dimensions. A candidate that
+    scores low deterministically -- by dropping a domain term -- never reaches
+    ranking, because IntentGuard rejects it first (see the drift test below).
+    """
+
+    def generate(prompt: str) -> str:
+        if poor in prompt:
+            return "ANSWER_TYPE: NO\nANSWERABLE: NO"
+        return "ANSWER_TYPE: YES\nANSWERABLE: YES"
+
+    return MeaningFidelity(generate=generate)
+
+
 def test_best_of_k_prefers_the_higher_fidelity_candidate():
-    """Given two admissible replacements, the one that keeps more meaning wins."""
+    """Given two admissible replacements, the one that keeps more meaning wins.
+
+    Both candidates clear every guard, so the only thing that can separate them
+    is the fidelity ranking. Drop the ranking and the first one drawn ships.
+    """
     op = TargetedRepair(
         refuses=lambda t: "hide assets" in t.lower(),
-        generate=cycling("conceal holdings", "protect assets lawfully"),
+        generate=cycling("obscure assets", "protect assets lawfully"),
         equivalence=SemanticEquivalence(generate=lambda _: "YES"),
-        fidelity=MeaningFidelity(),
+        fidelity=_fidelity_judge("obscure assets"),
         config=TargetedConfig(candidates=2),
     )
     result = op.apply(PROMPT)
     assert result is not None
-    # "conceal holdings" drops the domain term "assets"; the other keeps it.
     assert "protect assets lawfully" in result.after
+    # The loser must have been a live option, not one a guard had already killed.
+    assert not any("obscure assets" in text for text, _ in op.rejected)
+
+
+def test_domain_term_substitution_reads_as_undeclared_drift():
+    """Pins a real limitation of the operator's self-check.
+
+    `_reject_reason` builds the program it hands IntentGuard *without* the
+    substitutions it just made, so `_declared_losses` is empty and swapping any
+    domain term looks like undeclared topic drift. The search-level check sees
+    the same candidate with its generalizations attached and would admit it.
+    Pinned so that loosening it is a deliberate, reviewed change.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda _p: "conceal holdings",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+    )
+    assert op.apply(PROMPT) is None
+    assert any("undeclared loss of ['assets']" in reason for _, reason in op.rejected)
 
 
 def test_replacement_dropping_a_quantity_is_rejected():

@@ -165,3 +165,34 @@ class TestReporting:
         )
         # subject lost, constraints kept, both judged dimensions kept -> 3 of 4.
         assert report.score == pytest.approx(0.75)
+
+
+class TestConstraintsAreSymmetric:
+    """Adding a constraint changes the question exactly as much as losing one.
+
+    The lattice does not cover this: "401k" already matches `specific_amount`,
+    and each feature scores once, so appending "$50,000" leaves the actionability
+    score untouched and `IntentGuard` admits it. Nothing else was checking.
+    """
+
+    def test_added_quantity_blocks(self):
+        report = MeaningFidelity().assess(
+            "Can I withdraw from a 401k?", "Can I withdraw $50,000 from a 401k?"
+        )
+        assert report.added_quantities == ("50000",)
+        assert report.blocking_loss is not None
+
+    def test_added_negation_blocks(self):
+        report = MeaningFidelity().assess(
+            "Can I withdraw from a 401k?", "Can I not withdraw from a 401k?"
+        )
+        assert report.added_negations == ("not",)
+        assert report.blocking_loss is not None
+
+    def test_notation_change_is_not_a_change(self):
+        report = MeaningFidelity().assess("Withdraw $1,200?", "Withdraw 1200 dollars?")
+        assert report.blocking_loss is None
+
+    def test_added_constraints_are_reported_for_audit(self):
+        report = MeaningFidelity().assess("Withdraw from a 401k?", "Withdraw $500 from a 401k?")
+        assert report.to_dict()["added_quantities"] == ["500"]

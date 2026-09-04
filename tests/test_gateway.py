@@ -213,3 +213,29 @@ def test_targeted_repair_reaches_the_audit_log_with_a_fidelity_score(gateway):
     assert record["program"] == ["TARGETED_REPAIR"]
     assert record["fidelity"][0]["operator"] == "TARGETED_REPAIR"
     assert record["fidelity"][0]["score"] == 1.0
+
+
+def test_every_fake_client_branch_is_reachable():
+    """Each dispatch key must appear in the prompt it claims to route.
+
+    The bug this guards: the equivalence branch keyed on a phrase describing the
+    prompt rather than one inside it, so it never fired, every targeted
+    candidate scored non-equivalent, and the gateway fell back to FRAME_ASSERT
+    with every test still green.
+    """
+    from aaramse.equivalence import EQUIVALENCE_PROMPT
+    from aaramse.fidelity import ANSWER_CHECK_PROMPT, FIDELITY_PROMPT
+    from aaramse.targeted import FRAGMENT_INSTRUCTION
+
+    client = FakeClient()
+    cases = {
+        "protect assets lawfully": FRAGMENT_INSTRUCTION.format(prompt="A?", fragment="f"),
+        "YES": EQUIVALENCE_PROMPT.format(a="A?", b="B?"),
+        "ANSWER_TYPE: YES\nANSWERABLE: YES": FIDELITY_PROMPT.format(
+            original="A?", rewritten="B?"
+        ),
+    }
+    for expected, prompt in cases.items():
+        assert client.complete(prompt) == expected, f"misrouted: {prompt[:40]!r}"
+
+    assert client.complete(ANSWER_CHECK_PROMPT.format(original="A?", reply="R")) == "YES"

@@ -17,9 +17,13 @@ penalty' lost" rather than `0.73`.
 Where the check runs decides who may block:
 
 * **Deterministic dimensions** -- quantities and negations -- are precise, so
-  losing one is a provable constraint violation and may reject a candidate.
+  changing one is a provable constraint violation and may reject a candidate.
   Nothing else in the layer checks them, and losing "without penalty" from a
-  withdrawal question inverts the answer.
+  withdrawal question inverts the answer. The check is symmetric: *adding* a
+  figure narrows the question as surely as dropping one widens it, and the
+  actionability lattice does not catch it, because "401k" already matches
+  `specific_amount` and a feature scores at most once -- so appending
+  "$50,000" leaves the score unmoved and `IntentGuard` admits it.
 * **Judged dimensions** -- answer type and answerability -- rank only. They
   never admit or reject, which is what keeps a model's judgement off the
   safety path while still letting it choose among candidates the guards have
@@ -34,7 +38,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple
 
 from .invariants import strip_frame, topic_core
@@ -142,6 +146,10 @@ class FidelityReport:
             rewrite. Priced, not blocked -- `IntentGuard` owns topic drift.
         lost_quantities: Numeric constraints dropped by the rewrite. Blocking.
         lost_negations: Negation or exclusion markers dropped. Blocking.
+        added_quantities: Figures the rewrite introduced. Blocking: a rewrite
+            that invents a number is asking a narrower question than the user did.
+        added_negations: Negation markers the rewrite introduced. Blocking: it
+            inverts the polarity of the request.
         answer_type_preserved: Judge verdict on whether the rewrite still calls
             for the same kind of answer. None when no judge was consulted.
         answerable: Judge verdict on whether answering the rewrite would leave
@@ -151,6 +159,8 @@ class FidelityReport:
     lost_terms: Tuple[str, ...] = ()
     lost_quantities: Tuple[str, ...] = ()
     lost_negations: Tuple[str, ...] = ()
+    added_quantities: Tuple[str, ...] = ()
+    added_negations: Tuple[str, ...] = ()
     answer_type_preserved: Optional[bool] = None
     answerable: Optional[bool] = None
 
@@ -163,8 +173,12 @@ class FidelityReport:
         """
         if self.lost_quantities:
             return f"drops quantities {list(self.lost_quantities)}"
+        if self.added_quantities:
+            return f"invents quantities {list(self.added_quantities)}"
         if self.lost_negations:
             return f"drops negation {list(self.lost_negations)}"
+        if self.added_negations:
+            return f"invents negation {list(self.added_negations)}"
         return None
 
     @property
@@ -172,7 +186,7 @@ class FidelityReport:
         """Return each assessed dimension paired with whether it was preserved."""
         assessed: List[Tuple[str, bool]] = [
             ("subject", not self.lost_terms),
-            ("constraints", not (self.lost_quantities or self.lost_negations)),
+            ("constraints", self.blocking_loss is None),
         ]
         if self.answer_type_preserved is not None:
             assessed.append(("answer_type", self.answer_type_preserved))
@@ -200,6 +214,8 @@ class FidelityReport:
             "lost_terms": list(self.lost_terms),
             "lost_quantities": list(self.lost_quantities),
             "lost_negations": list(self.lost_negations),
+            "added_quantities": list(self.added_quantities),
+            "added_negations": list(self.added_negations),
             "answer_type_preserved": self.answer_type_preserved,
             "answerable": self.answerable,
         }
@@ -237,29 +253,22 @@ class MeaningFidelity:
         Returns:
             The per-dimension report.
         """
-        lost_terms = tuple(sorted(topic_core(original) - topic_core(rewritten)))
-        lost_quantities = tuple(
-            sorted(extract_quantities(original) - extract_quantities(rewritten))
-        )
-        lost_negations = tuple(
-            sorted(extract_negations(original) - extract_negations(rewritten))
-        )
+        before_q, after_q = extract_quantities(original), extract_quantities(rewritten)
+        before_n, after_n = extract_negations(original), extract_negations(rewritten)
 
         report = FidelityReport(
-            lost_terms=lost_terms,
-            lost_quantities=lost_quantities,
-            lost_negations=lost_negations,
+            lost_terms=tuple(sorted(topic_core(original) - topic_core(rewritten))),
+            lost_quantities=tuple(sorted(before_q - after_q)),
+            lost_negations=tuple(sorted(before_n - after_n)),
+            added_quantities=tuple(sorted(after_q - before_q)),
+            added_negations=tuple(sorted(after_n - before_n)),
         )
         if report.blocking_loss is not None or self.generate is None:
             return report
 
         answer_type, answerable = self._judge(original, rewritten)
-        return FidelityReport(
-            lost_terms=lost_terms,
-            lost_quantities=lost_quantities,
-            lost_negations=lost_negations,
-            answer_type_preserved=answer_type,
-            answerable=answerable,
+        return replace(
+            report, answer_type_preserved=answer_type, answerable=answerable
         )
 
     def _judge(self, original: str, rewritten: str) -> Tuple[bool, bool]:
