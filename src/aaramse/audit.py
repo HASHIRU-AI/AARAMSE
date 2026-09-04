@@ -27,7 +27,19 @@ GENESIS_HASH = "0" * 64
 
 
 def _diagnostics(result: RepairResult) -> Optional[Dict[str, Any]]:
-    """Serialize the search failure counters, when the result carries them."""
+    """Serialize the search failure counters, when the result carries them.
+
+    `answered_other` is written even though it was not before. It is the counter
+    that separates `answered_different` from `model_upheld`, so an analysis
+    reading the log rather than the live object was silently unable to tell the
+    two apart -- and telling them apart is the whole point of the taxonomy.
+
+    `failure_class` is written alongside the counts so the label is computed
+    once, by the authoritative definition on `SearchDiagnostics`, rather than
+    re-derived by every script that reads the log. Budget exhaustion is not
+    visible in the counts, so a reader wanting that case must still check
+    `reason` first and treat this label as the fallback.
+    """
     diag = result.diagnostics
     if diag is None:
         return None
@@ -35,6 +47,8 @@ def _diagnostics(result: RepairResult) -> Optional[Dict[str, Any]]:
         "candidates_generated": diag.candidates_generated,
         "probed_refused": diag.probed_refused,
         "blocked_candidates": list(diag.blocked_candidates),
+        "answered_other": diag.answered_other,
+        "failure_class": diag.failure_class,
     }
 
 
