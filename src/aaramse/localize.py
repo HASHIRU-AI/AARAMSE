@@ -49,6 +49,13 @@ class Localization:
         granularity: "sentence" or "word", whichever the reduction reached.
         tests: Oracle queries consumed.
         reduced_from: Fragment count of the original prompt at that granularity.
+        spans: Half-open character ranges of each fragment in the original
+            prompt, in order. This is what lets a repair edit the fragment that
+            was actually localized rather than the first textual match of it:
+            a word-granularity mRTF containing a common token ("before", "my",
+            "to") occurs many times, and matching by string picks whichever
+            comes first. Empty when the fragments could not be anchored, which
+            a caller must treat as "no anchor" rather than as position zero.
     """
 
     fragments: Tuple[str, ...]
@@ -56,6 +63,7 @@ class Localization:
     granularity: str
     tests: int
     reduced_from: int
+    spans: Tuple[Tuple[int, int], ...] = ()
 
     @property
     def reduction_ratio(self) -> float:
@@ -101,8 +109,40 @@ class _Tester:
         return verdict
 
 
-def _chunks(units: Sequence[str], n: int) -> List[Tuple[int, int]]:
-    """Partition indices into n contiguous blocks."""
+def _unit_spans(text: str, units: Sequence[str]) -> Tuple[Tuple[int, int], ...]:
+    """Locate every unit in `text`, in order, as a half-open character span.
+
+    Exact rather than heuristic, because `units` is the *complete* ordered
+    decomposition of `text`: scanning forward from the previous match, a
+    repeated word can only be found at its own occurrence, since every earlier
+    occurrence was already consumed by an earlier unit.
+
+    Args:
+        text: The string the units were split from.
+        units: That split, complete and in order.
+
+    Returns:
+        One span per unit, or `()` when any unit could not be located -- so an
+        unanchorable localization is detectable instead of silently wrong.
+    """
+    spans: List[Tuple[int, int]] = []
+    cursor = 0
+    for unit in units:
+        start = text.find(unit, cursor)
+        if start < 0:
+            logger.debug("unit %r not found after offset %d; dropping anchors", unit, cursor)
+            return ()
+        spans.append((start, start + len(unit)))
+        cursor = start + len(unit)
+    return tuple(spans)
+
+
+def _chunks(units: Sequence[object], n: int) -> List[Tuple[int, int]]:
+    """Partition indices into n contiguous blocks.
+
+    Takes the sequence only to read its length, so it is deliberately untyped
+    in its element: reduction partitions index lists, not the units themselves.
+    """
     size = max(1, len(units) // n)
     spans: List[Tuple[int, int]] = []
     start = 0
@@ -113,15 +153,23 @@ def _chunks(units: Sequence[str], n: int) -> List[Tuple[int, int]]:
     return spans
 
 
-def _ddmin(units: Sequence[str], tester: _Tester) -> Tuple[str, ...]:
+def _ddmin(units: Sequence[str], tester: _Tester) -> Tuple[int, ...]:
     """Reduce a failing sequence to a 1-minimal one by complement testing.
 
     At each round the sequence is partitioned into n blocks; removing a block
     and still seeing a refusal means the removed part was irrelevant, so the
     remainder becomes the new candidate and the partition is coarsened. If no
     single removal preserves the refusal, the partition is refined instead.
+
+    Reduction carries *indices* rather than the strings themselves, so the
+    caller can recover where each surviving fragment sat in the original text.
+    Reducing over the strings loses that, and it cannot be recovered afterwards
+    by searching for them.
+
+    Returns:
+        Ascending indices into `units` forming the 1-minimal subsequence.
     """
-    current = list(units)
+    current = list(range(len(units)))
     n = 2
     while len(current) >= 2:
         reduced = False
@@ -129,7 +177,7 @@ def _ddmin(units: Sequence[str], tester: _Tester) -> Tuple[str, ...]:
             complement = current[:start] + current[end:]
             if not complement:
                 continue
-            if tester(complement):
+            if tester([units[index] for index in complement]):
                 current = complement
                 n = max(n - 1, 2)
                 reduced = True
@@ -160,24 +208,27 @@ def localize_mrtf(
         the oracle does not actually refuse it, or the budget ran out first).
     """
     sentences = split_sentences(prompt)
+    sentence_spans = _unit_spans(prompt, sentences)
     sentence_tester = _Tester(refuses=refuses, joiner=" ", budget=max_tests)
 
     try:
         if not sentence_tester(sentences):
             logger.debug("prompt is not refused; nothing to localize")
             return None
-        reduced = _ddmin(sentences, sentence_tester)
+        kept = _ddmin(sentences, sentence_tester)
     except _BudgetExceeded:
         logger.warning("localization budget exhausted at sentence stage")
         return None
 
     granularity = "sentence"
-    fragments = reduced
+    fragments = tuple(sentences[index] for index in kept)
+    spans = tuple(sentence_spans[index] for index in kept) if sentence_spans else ()
     reduced_from = len(sentences)
     tests = sentence_tester.tests
 
-    if word_stage and len(reduced) == 1:
-        words = split_words(reduced[0])
+    if word_stage and len(kept) == 1:
+        sentence = sentences[kept[0]]
+        words = split_words(sentence)
         if len(words) > 2:
             word_tester = _Tester(
                 refuses=refuses,
@@ -187,9 +238,21 @@ def localize_mrtf(
             )
             try:
                 if word_tester(words):
-                    fragments = _ddmin(words, word_tester)
+                    word_kept = _ddmin(words, word_tester)
+                    fragments = tuple(words[index] for index in word_kept)
                     granularity = "word"
                     reduced_from = len(words)
+                    # Word spans are relative to the sentence; shift them into
+                    # prompt coordinates so every span means the same thing.
+                    word_spans = _unit_spans(sentence, words)
+                    if word_spans and sentence_spans:
+                        offset = sentence_spans[kept[0]][0]
+                        spans = tuple(
+                            (offset + word_spans[index][0], offset + word_spans[index][1])
+                            for index in word_kept
+                        )
+                    else:
+                        spans = ()
             except _BudgetExceeded:
                 logger.info("budget exhausted at word stage; keeping sentence-level mRTF")
             tests += word_tester.tests
@@ -200,4 +263,5 @@ def localize_mrtf(
         granularity=granularity,
         tests=tests,
         reduced_from=reduced_from,
+        spans=spans,
     )

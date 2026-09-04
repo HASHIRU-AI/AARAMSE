@@ -229,7 +229,9 @@ def test_every_fake_client_branch_is_reachable():
 
     client = FakeClient()
     cases = {
-        "protect assets lawfully": FRAGMENT_INSTRUCTION.format(prompt="A?", fragment="f"),
+        "protect assets lawfully": FRAGMENT_INSTRUCTION.format(
+            prompt="A?", fragment="f", nudge=""
+        ),
         "YES": EQUIVALENCE_PROMPT.format(a="A?", b="B?"),
         "ANSWER_TYPE: YES\nANSWERABLE: YES": FIDELITY_PROMPT.format(
             original="A?", rewritten="B?"

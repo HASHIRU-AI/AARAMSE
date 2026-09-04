@@ -174,14 +174,14 @@ def test_best_of_k_prefers_the_higher_fidelity_candidate():
     assert not any("obscure assets" in text for text, _ in op.rejected)
 
 
-def test_domain_term_substitution_reads_as_undeclared_drift():
-    """Pins a real limitation of the operator's self-check.
+def test_domain_term_substitution_is_declared_not_drift():
+    """The operator's self-check now sees the substitutions it just made.
 
-    `_reject_reason` builds the program it hands IntentGuard *without* the
-    substitutions it just made, so `_declared_losses` is empty and swapping any
-    domain term looks like undeclared topic drift. The search-level check sees
-    the same candidate with its generalizations attached and would admit it.
-    Pinned so that loosening it is a deliberate, reviewed change.
+    `_reject_reason` used to hand IntentGuard a program with no generalizations
+    attached, so `_declared_losses` was empty and swapping any domain term read
+    as undeclared topic drift -- while the identical check at the search level,
+    which does see them, admitted the same candidate. The operator's own guard
+    was strictly stricter than the one the search would apply.
     """
     op = TargetedRepair(
         refuses=lambda t: "hide assets" in t.lower(),
@@ -189,8 +189,55 @@ def test_domain_term_substitution_reads_as_undeclared_drift():
         equivalence=SemanticEquivalence(generate=lambda _: "YES"),
         fidelity=MeaningFidelity(),
     )
-    assert op.apply(PROMPT) is None
-    assert any("undeclared loss of ['assets']" in reason for _, reason in op.rejected)
+    result = op.apply(PROMPT)
+
+    assert result is not None, "a declared domain-term swap must be admissible"
+    assert result.generalizations == (("hide assets", "conceal holdings"),)
+    assert not any("undeclared loss" in reason for _, reason in op.rejected)
+
+
+def test_declared_subject_loss_is_still_priced():
+    """Declaring a loss makes it legal, not invisible.
+
+    IntentGuard admits the swap above; `MeaningFidelity` still records the lost
+    subject term, which lowers the score and so makes best-of-k prefer a rewrite
+    that keeps it. Blocking and pricing are different jobs and stay separate.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda _p: "conceal holdings",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+    )
+    result = op.apply(PROMPT)
+
+    assert result is not None
+    assert result.fidelity is not None
+    assert "assets" in result.fidelity.lost_terms
+    assert result.fidelity.score < 1.0
+
+
+def test_edit_lands_on_the_localized_occurrence_not_the_first_match():
+    """Confinement is a claim about *which* characters changed.
+
+    The mRTF here is the non-contiguous ("hide", "pension?") inside the second
+    sentence, and "hide" also occurs in the benign first one. Splicing by string
+    match rewrote the first sentence -- byte-identity held, and the layer still
+    edited text delta debugging had cleared.
+    """
+    prompt = "A friend told me to hide things. Can I hide money in a pension?"
+    op = TargetedRepair(
+        refuses=lambda t: "hide" in t.lower() and "pension" in t.lower(),
+        generate=lambda _p: "shelter",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+    )
+    result = op.apply(prompt)
+
+    assert result is not None
+    assert result.after.startswith("A friend told me to hide things."), (
+        f"the untouched sentence was edited: {result.after!r}"
+    )
 
 
 def test_replacement_dropping_a_quantity_is_rejected():
@@ -235,6 +282,49 @@ def test_fidelity_report_rides_along_for_the_audit_log():
     assert result is not None
     assert result.fidelity is not None
     assert result.fidelity.score == 1.0
+
+
+def test_best_of_k_asks_a_distinguishable_question_each_sample():
+    """k identical requests return one cached string k times.
+
+    Every deployed client memoises on (prompt, temperature, max_tokens) and the
+    gateway asks at temperature 0, so sending the same fragment prompt k times
+    drew one candidate and best-of-k silently collapsed to k=1 against every
+    real model. Only the fake generators in this file, which ignore the prompt,
+    ever saw more than one. The samples must therefore differ as *prompts*.
+    """
+    asked: list[str] = []
+
+    def generate(prompt: str) -> str:
+        asked.append(prompt)
+        return f"protect assets lawfully {len(asked)}"
+
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=generate,
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=3),
+    )
+    op.apply(PROMPT)
+
+    assert len(asked) == 3
+    assert len(set(asked)) == 3, "samples are indistinguishable to a caching client"
+    # Sample 0 must be the unmodified instruction, so a k=1 run is unchanged.
+    assert sum(1 for prompt in asked if "Prefer" not in prompt) == 1
+
+
+def test_candidates_are_capped_at_the_available_nudges():
+    """Asking for more samples than the nudge set can vary sends duplicates."""
+    asked: list[str] = []
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda p: asked.append(p) or "protect assets lawfully",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=9),
+    )
+    op.apply(PROMPT)
+
+    assert len(asked) == 3, "capped to 1 + len(sample_nudges)"
 
 
 def test_identical_candidates_are_generated_once_each_but_judged_once():
