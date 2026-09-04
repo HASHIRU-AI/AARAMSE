@@ -22,6 +22,7 @@ audit/verify_demo.jsonl
 audit/preflight.jsonl
 audit/adjudicated_repair.json
 audit/adjudicated_repair.jsonl
+audit/e2e_smoke.jsonl
 
 # Local tooling state
 .claude/
