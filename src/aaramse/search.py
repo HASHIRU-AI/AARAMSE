@@ -24,6 +24,7 @@ from .fidelity import AnswerCheck
 from .invariants import ActionabilityScorer, IntentGuard
 from .operators.base import RewriteOperator
 from .refusal import CountingOracle, RefusalOracle, ResponseProbe
+from .harm import HarmScorer, PROHIBITED_THRESHOLD
 from .types import Decision, RepairResult, RewriteProgram, SearchDiagnostics
 
 __all__ = ["Realizer", "RepairSearch", "SearchConfig", "search_space_size"]
@@ -111,6 +112,8 @@ class RepairSearch:
     scorer: ActionabilityScorer = field(default_factory=ActionabilityScorer)
     probe: Optional[ResponseProbe] = None
     answer_check: Optional[AnswerCheck] = None
+    harm: HarmScorer = field(default_factory=HarmScorer)
+    harm_threshold: float = PROHIBITED_THRESHOLD
 
     def __post_init__(self) -> None:
         """Reject a search that has no way to observe the refusal boundary."""
@@ -145,6 +148,22 @@ class RepairSearch:
             return self._result(
                 query, query, RewriteProgram(), Decision.PASSTHROUGH, before, before,
                 counter.calls, space, "no refusal observed",
+            )
+
+        # Admission gate. A refusal on a query that requests harm is content-driven
+        # by definition, so there is nothing here for generalization to repair and
+        # every rewrite attempt is an attempt to talk the model past its own
+        # boundary. Read once, off the incoming query: the harm axis must not sit
+        # on the monotone lattice, because a euphemism *lowers* harm and would
+        # therefore be admitted more readily rather than blocked. See harm.py.
+        harm_profile = self.harm.profile(query)
+        if harm_profile.score >= self.harm_threshold:
+            features = ", ".join(name for name, _ in harm_profile.features)
+            logger.info("repair not attempted; harm gate fired (%s)", features)
+            return self._escalate(
+                query, before, counter, space,
+                f"prohibited content; repair not attempted (harm: {features})",
+                SearchDiagnostics(candidates_generated=0, probed_refused=0),
             )
 
         frontier: Deque[Tuple[str, RewriteProgram]] = deque([(query, RewriteProgram())])
