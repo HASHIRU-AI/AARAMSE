@@ -23,6 +23,7 @@ audit/preflight.jsonl
 audit/adjudicated_repair.json
 audit/adjudicated_repair.jsonl
 audit/e2e_smoke.jsonl
+audit/e2e_gate_offline.jsonl
 
 # Local tooling state
 .claude/
