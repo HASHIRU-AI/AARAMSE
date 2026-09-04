@@ -1,0 +1,8 @@
+# Test and lint toolchain. Mirrors [project.optional-dependencies].dev in
+# pyproject.toml.
+
+-r requirements.txt
+
+pytest>=8.0
+mypy>=1.10
+ruff>=0.5

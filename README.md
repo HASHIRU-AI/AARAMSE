@@ -188,7 +188,7 @@ make demo                                  # certify once (cached), serve the co
 make demo-offline                          # the whole pipeline, no model, instant
 python examples/finqa_control.py           # false-intervention rate, 120 items
 python examples/finqa_cause.py             # why each refusal happened
-make test                                  # 305 tests
+make test                                  # 360 tests
 ```
 
 `make demo` stands the layer in front of `qwen3.5:4b` under the FCA compliance

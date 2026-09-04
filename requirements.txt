@@ -1,0 +1,10 @@
+# Runtime dependencies. Mirrors [project].dependencies in pyproject.toml --
+# keep the two in step.
+#
+# Note what is NOT here: the package, its 360 tests, and `make demo-offline`
+# are pure standard library. litellm is imported lazily, only when the default
+# client backend actually calls a model. Set AARAMSE_CLIENT_BACKEND=native to
+# use the hand-rolled urllib clients (openai / anthropic / ollama) instead and
+# this file is not needed at all.
+
+litellm>=1.99
