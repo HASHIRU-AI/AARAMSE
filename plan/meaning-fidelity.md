@@ -210,16 +210,54 @@ live item, which is the tension the whole design sits on.
 
 `docs/measurement.md` still publishes no fidelity figure, which remains correct.
 
+## Three defects found on review, 2026-09-04 (fixed)
+
+A read of the repair path against this document turned up three things that
+made the operator do less than the design says it does. All three are fixed on
+`fix/repair-search-correctness`, each verified by mutation.
+
+1. **Best-of-k was inert against every real model.** `_candidates` looped
+   `repair_candidates` times sending the *same* fragment prompt, and every
+   deployed client memoises on (prompt, temperature, max_tokens) while the
+   gateway asks at temperature 0. k identical requests returned one cached
+   string k times; dedup dropped the copies; ranking had one candidate to rank.
+   Only the unit tests here, whose fake generators ignore the prompt, ever saw
+   more than one -- which is why the mutation battery above passed while the
+   feature did nothing in the gateway. **Every claim in "What shipped" about
+   best-of-k describes unit-test behaviour, not deployed behaviour**, and the
+   `gemma4:12b` live run was effectively k=1. Samples 2..k now vary the
+   instruction, which changes the cache key and keeps the run reproducible.
+
+2. **Splicing could edit the wrong occurrence.** A word-granularity mRTF is a
+   subsequence of common tokens, and `text.replace(fragment, replacement, 1)`
+   takes the first match in the prompt rather than the one that was localized.
+   `_ddmin` now reduces over indices, `Localization` carries character spans,
+   and repair splices by span. Byte-identity was never at risk; *confinement*
+   was, and confinement is the stronger claim.
+
+3. **Open item 1 below, closed.** See the entry.
+
 ## Open items
 
-1. **The operator/search guard asymmetry.** `_reject_reason` hands `IntentGuard`
-   a program carrying none of the substitutions just made, so `_declared_losses`
-   is empty and any domain-term swap reads as undeclared topic drift.
-   `TARGETED_REPAIR` therefore cannot substitute a domain term, ever. The
-   search-level check sees the same candidate *with* its generalizations
-   attached and would admit it. A concrete instance of Phase 3's class (b),
-   "the actionability lattice is over-tight". Left as-is and pinned by a test:
-   loosening a guard is not a change to make while verifying something else.
+1. ~~**The operator/search guard asymmetry.**~~ **Closed 2026-09-04.**
+   `_reject_reason` handed `IntentGuard` a program carrying none of the
+   substitutions just made, so `_declared_losses` was empty and any domain-term
+   swap read as undeclared topic drift. `TARGETED_REPAIR` therefore could not
+   substitute a domain term, ever, while the search-level check -- seeing the
+   same candidate *with* its generalizations attached -- would have admitted it.
+   The operator's own guard was strictly stricter than the one the search
+   applies, for no stated reason.
+
+   The substitutions are now passed through. Note the consequence: because
+   confinement guarantees every character outside the mRTF survives, and every
+   word inside it is now declared, the topic-drift branch of `_reject_reason`
+   can no longer fire for this operator. Meaning is defended instead by the
+   deterministic constraint checks (which block), the equivalence judge, and
+   `lost_terms` lowering the fidelity score so best-of-k prefers a rewrite that
+   keeps the subject. That is the intended division of labour, but it is a real
+   loosening and the recovery/leak numbers must be re-measured before it is
+   cited. The test that pinned the old behaviour is replaced by two that pin
+   the new one.
 2. **The bare-digit judge parse.** See above. Blocked behind the Phase 2
    decision to take the judge off the runtime path.
 3. **`delivers_procedure` on benign educational replies.** One observation,

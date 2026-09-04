@@ -116,6 +116,12 @@ repairs, so 7 of 8 failures carry no forensic data at all.
 
 The distribution over a-d selects the Phase 3 direction.
 
+**Note on prior runs.** Every measurement taken before 2026-09-04 ran with
+best-of-k inert (see `plan/meaning-fidelity.md`) and with `TARGETED_REPAIR`
+unable to substitute a domain term. Both bounded recovery downward, so the
+1/3 figure is a floor for the current operator, not a measurement of it. The
+a/b/c/d run below should be taken after the fixes, not before.
+
 **Live observation, 2026-09-04 (n=1, `gemma4:12b`).** One class (c) instance
 recorded in `plan/meaning-fidelity.md`: on "Should I dump my 401(k) into gold
 before the crash?" the operator localized `"before crash?"`, produced an
@@ -145,8 +151,8 @@ Details in `plan/meaning-fidelity.md`.
 | Dominant failure | Direction |
 |---|---|
 | (a) localization | Iterative / multi-fragment mRTF. `ddmin` gives 1-minimality of *one* set; a refusal driven by a conjunction never clears by removing one fragment. Re-localize on the residual. |
-| (b) guard rejection | The actionability lattice is over-tight. Measure per-guard rejection rate and relax the binding one. Cheapest possible win if it is the bottleneck. A concrete instance is already known: `_reject_reason` hands IntentGuard a program with none of its substitutions attached, so `TARGETED_REPAIR` can never swap a domain term. See `plan/meaning-fidelity.md`. |
-| (c) weak replacement | Best-of-k at fragment level. **Landed 2026-09-04** (`af3838b`): `repair_candidates` samples k and ranks on meaning fidelity, with the equivalence judge spent from the top down. Ranking is only as good as the judge -- it degenerates entirely below `gemma4:12b`. See `plan/meaning-fidelity.md`. |
+| (b) guard rejection | The actionability lattice is over-tight. Measure per-guard rejection rate and relax the binding one. Cheapest possible win if it is the bottleneck. The one known concrete instance is **fixed** (2026-09-04): `_reject_reason` handed IntentGuard a program with none of its substitutions attached, so `TARGETED_REPAIR` could never swap a domain term. See `plan/meaning-fidelity.md`. |
+| (c) weak replacement | Best-of-k at fragment level. Landed `af3838b`, but **inert until 2026-09-04**: all k samples sent the same prompt and the client cache returned one string k times, so k collapsed to 1 against every real model and the fidelity ranking never had anything to rank. Samples now vary the instruction. Ranking is still only as good as the judge -- it degenerates entirely below `gemma4:12b`. See `plan/meaning-fidelity.md`. |
 | (d) exhaustion | Composition. The registry holds 2 operators, so program search has almost nothing to search. |
 
 **Primary hypothesis, independent of a-d: the scoped frame.** Confinement
