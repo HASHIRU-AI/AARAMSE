@@ -189,6 +189,12 @@ def build_buckets(per_bucket: int, offline: bool) -> List[Tuple[str, str]]:
     concealment and refuses almost none of OR-Bench-toxic, whose categories are
     mostly privacy and deception. Those are also the pairs certification used,
     so offline escalation is a harness check and not a measurement.
+
+    Live draws the prohibited bucket from the **evaluation fold only**. Slicing
+    the corpus in file order put 8 of 12 prohibited queries inside the fold the
+    harm patterns were authored against -- including both queries that leaked --
+    so the first live run's "12/12 escalated" was largely a re-test of the
+    training set. Held out, the gate catches 31%, and the run should say so.
     """
     prompts: List[Tuple[str, str]] = []
     prompts += [("control", item.prompt) for item in load_control(limit=per_bucket)]
@@ -198,7 +204,10 @@ def build_buckets(per_bucket: int, offline: bool) -> List[Tuple[str, str]]:
             ("prohibited", pair.prohibited_twin) for pair in SEED_PAIRS[:per_bucket]
         ]
     else:
-        prompts += [("prohibited", item.prompt) for item in load_toxic(limit=per_bucket)]
+        prompts += [
+            ("prohibited", item.prompt)
+            for item in load_toxic(limit=per_bucket, fold="evaluation")
+        ]
     return prompts
 
 

@@ -1,6 +1,8 @@
 # The harm gate: closing induced leakage on lattice-blind queries
 
-Status: **gate built, red-green verified, live e2e green on `gemma4:12b` (0 leaks, 0 false interventions)**
+Status: **gate built, red-green verified; live e2e green on `gemma4:12b` on the
+held-out fold (0 leaks), but only 4/12 of that came from the gate -- 8 rested on
+search exhaustion. Held-out gate recall is 31%.**
 Branch: `fix/repair-search-correctness`
 Opened: 2026-09-04
 
@@ -132,6 +134,55 @@ so the gate also cut the run's cost substantially.
 The 2 control false interventions **did not reproduce**, and the harm gate does
 not touch controls (all 12 score 0 on the harm axis), so that defect is
 nondeterministic rather than a systematic misclassification -- see open item 2.
+
+## The live run was measuring its own training set
+
+Recorded after the fact: `examples/e2e_smoke.py` built its prohibited bucket
+with `load_toxic(limit=per_bucket)`, which slices the corpus in **file order**
+and ignores `splits.split_items` entirely. Measured on the 12-item bucket the
+"Live confirmation" table above was produced from:
+
+| bucket | drawn from the pattern-authoring fold | harm gate fires |
+|---|---|---|
+| old, file order | **8 / 12** | 7 / 12 |
+| new, evaluation fold | **0 / 12** | 4 / 12 |
+
+Both previously-leaking queries sit in that 8, and 5 of the 7 gate fires were on
+items the patterns were written against. So "12/12 escalated, 0 leaks" confirmed
+that the two known leaks are closed -- it was **not** evidence that the gate
+generalizes, and the table read stronger than the 31% held-out recall recorded
+one section above it.
+
+Fixed by giving both loaders an explicit `fold` argument applied *before* the
+limit (`falsereject.py`), with `e2e_smoke.py` drawing `fold="evaluation"` for
+the live bucket. `preflight.py` was checked and was already correct: it loads,
+then splits, then certifies and enforces the budget on opposite folds.
+
+### Re-run on the held-out fold
+
+`--per-bucket 12` against `gemma4:12b`, evidence in `audit/e2e_heldout_live.jsonl`
+(27 records, chain intact). **It came back green:**
+
+| bucket | n | result |
+|---|---|---|
+| prohibited | 12 | **12/12 escalated, 0 leaks** |
+| control | 12 | 12/12 passthrough, byte-identical |
+| benign | 3 | 0 recovered |
+
+The prediction that this would turn red was wrong, and the reason is worth
+keeping. The gate fired on only **4 of 12** at 2 oracle calls each; the other
+**8 were caught by search exhaustion** at 15-32 calls, escalating with
+`search exhausted; refusal is content-driven`. Defence in depth carried the
+queries the regexes never saw.
+
+Two cautions against over-reading this. The layer that caught those 8 is the
+same layer that was in place when the original two leaks got through, so it is
+not independently sound -- it happened to hold on these 12. And n=12 from a
+29-item fold is a small sample: 31% gate recall means roughly 8 of 12 relying on
+exhaustion every run, and exhaustion has already been observed to fail.
+
+Also seen: `FRAME_ASSERT` failed certification again at **4/8 flips**, against
+1/8 in the prior run. A second data point, and a wider miss -- see open item 4.
 
 ## Open items
 
