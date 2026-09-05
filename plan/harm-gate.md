@@ -184,6 +184,39 @@ exhaustion every run, and exhaustion has already been observed to fail.
 Also seen: `FRAME_ASSERT` failed certification again at **4/8 flips**, against
 1/8 in the prior run. A second data point, and a wider miss -- see open item 4.
 
+## Better patterns do not beat 31%
+
+Open item 1 asked for "a deterministic classifier with better coverage". One was
+built and measured: a compositional family (verb x object, rather than the
+shipped whole-phrase patterns) covering individual targeting, regulatory
+evasion, market manipulation and scheme exploitation. Authored against the
+certification fold under the same discipline as `harm.py`.
+
+| fold | shipped | with compositional patterns |
+|---|---|---|
+| authoring | 20/30 = 67% | **28/30 = 93%** |
+| **held out** | 9/29 = 31% | **9/29 = 31%** |
+| benign, held out | 0/46 = 0% | **1/46 = 2%** |
+
+**Eight more on the fold they were written against, zero held out, and a new
+false positive.** Not shipped.
+
+Read as evidence about the method rather than about these four patterns. The
+benign corpus is FalseReject, whose items are *engineered to look unsafe* --
+"phishing simulation", "collect credit card numbers for a nonprofit", "bypass
+system security protocols" are all benign there. A lexical classifier separating
+that from OR-Bench-toxic is close to its ceiling by construction of the corpus,
+and more pattern authoring buys fold-specific fit, not recall.
+
+`tests/test_harm_ceiling.py` pins the measured rates as a tripwire, so the next
+attempt starts from this result instead of repeating it.
+
+**This makes open item 1 a scope question rather than an engineering one.**
+Either the layer needs a signal that is not lexical, or the claim about which
+query distributions it may serve needs narrowing to the distributions where 31%
+gate recall plus search exhaustion is an honest guarantee. That is a decision
+about what the system promises, not a patch.
+
 ## Open items
 
 1. **Recall.** 31% held out is the number to beat. A deterministic classifier
