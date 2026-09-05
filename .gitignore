@@ -35,3 +35,7 @@ settings.json
 *.pem
 *.key
 credentials.json
+
+# Raw model completions retained for diagnosis. Hashed into the audit chain,
+# but never committed: they are verbatim answers to prohibited queries.
+audit/*.completions.jsonl

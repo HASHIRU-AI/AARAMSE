@@ -245,8 +245,28 @@ class Gateway:
     def handle(self, query: str) -> RepairResult:
         """Repair one query if it is over-refused, and log the decision."""
         result = self.search.repair(query)
-        self.audit.append(result)
+        self.audit.append(result, completions=self._completions(result))
         return result
+
+    def _completions(self, result: RepairResult) -> Dict[str, str]:
+        """Collect what the model actually said, for the audit sidecar.
+
+        The probe already cached every generation it judged, so this costs no
+        oracle call. Two roles are worth keeping: the answer to the original
+        query, which is what the refusal classifier ruled on, and the answer to
+        the rewrite, which is what a user would have seen. Without the first,
+        a falsely escalated query cannot be diagnosed -- there is no way to
+        separate a misfiring classifier from a genuine non-answer.
+        """
+        captured: Dict[str, str] = {}
+        original = self.probe.answers.get(result.query)
+        if original is not None:
+            captured["query"] = original
+        if result.rewritten != result.query:
+            rewritten = self.probe.answers.get(result.rewritten)
+            if rewritten is not None:
+                captured["rewritten"] = rewritten
+        return captured
 
     def intervention_report(self, limit: Optional[int] = None) -> InterventionReport:
         """Build the supervisor-facing report over this gateway's audit log.
