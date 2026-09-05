@@ -426,9 +426,28 @@ def main() -> int:
     distinct = len(set(client.fragment_prompts))
     print(f"    fragment asks   {len(client.fragment_prompts)} sent, {distinct} distinct")
 
+    # An operator excluded at certification never reaches a query, so it leaves
+    # no trace in any outcome. Without this the run can print PASSED while the
+    # algebra that produced those outcomes was half the size it advertises --
+    # which is exactly how TARGETED_REPAIR, the operator that induced both
+    # leaks, stayed dark across an entire offline suite.
+    coverage_notes = [
+        (
+            f"{item['operator']} was never exercised (0 trials): the corpus held "
+            "nothing it could act on, so nothing in this run is evidence about it"
+        )
+        if item["cause"] == "untestable"
+        else (
+            f"{item['operator']} weakened the boundary in {item['flips']} of "
+            f"{item['trials']} trials and was excluded"
+        )
+        for item in gateway.intervention_report().exclusions
+    ]
+
     print("\n" + RULE)
     hard = [(o.bucket, o.prompt, f) for o in outcomes for f in o.hard_failures]
     soft = [(o.bucket, o.prompt, n) for o in outcomes for n in o.soft_notes]
+    soft += [("coverage", "operator algebra", note) for note in coverage_notes]
     hard_total = len(hard) + len(contract_failures) + len(log_failures)
 
     if soft:
