@@ -46,6 +46,7 @@ from aaramse.falsereject import load_toxic
 from aaramse.gateway import Gateway, GatewayConfig
 from aaramse.refusal import HeuristicRefusalOracle
 from aaramse.serve import serve
+from aaramse.simulate import simulated_complete
 from aaramse.splits import assert_disjoint, split_digest, split_items
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
@@ -78,15 +79,16 @@ class SimulatedClient(OllamaClient):
         return "Here is general, factual information about the subject you asked about."
 
     def complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 60) -> str:
-        """Serve the judge, the equivalence check, and fragment rewriting."""
+        """Serve the judge, the equivalence check, and fragment rewriting.
+
+        Delegates to `aaramse.simulate`, which lives in the package so the unit
+        suite exercises the same stand-in these examples do. It previously
+        returned the blocking fragment unchanged, which proposed nothing, so
+        `TARGETED_REPAIR` recorded zero trials and was excluded as untestable
+        while the run reported PASSED.
+        """
         self.calls += 1
-        if "1_full_compliance" in prompt:
-            target = prompt.split("RESPONSE:", 1)[-1].lower()
-            return "2_full_refusal" if "cannot" in target else "1_full_compliance"
-        if "request the same information" in prompt:
-            return "YES"
-        fragment = prompt.split('Blocking fragment: "', 1)[-1].split('"', 1)[0]
-        return fragment.lower()
+        return simulated_complete(prompt)
 
 
 def prohibited_prompts(live: bool, limit: int) -> Tuple[str, ...]:
