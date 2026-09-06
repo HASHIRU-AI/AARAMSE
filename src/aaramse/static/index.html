@@ -275,10 +275,16 @@ button.chip:hover{border-color:var(--amber);color:var(--bone)}
            should not have, the layer localizes the trigger, repairs it, and re-probes &mdash;
            and if the repair does not work, it escalates instead of guessing. Nothing is
            touched unless it was refused first.</p>
-        <p>The three below are one of each outcome. The middle one is the case this
+        <p>The first three are one of each outcome. The second is the case this
            exists for: the model declines to give the <i>legal definition</i> of a term
-           as though a definition were regulated advice. The last is genuinely
+           as though a definition were regulated advice. The third is genuinely
            prohibited, and stays refused.</p>
+        <p>The fourth shows the confined operator at work. It localizes the fragment
+           that triggered the refusal and proposes a replacement for it, rather than
+           prepending a frame &mdash; and here it is correctly held back, because the
+           fragment it found names the subject rather than the framing, and swapping
+           the subject would answer a different question. Open its trace: the third
+           escalates before any rewrite is attempted, this one escalates after.</p>
         <div class="seeds" id="seeds"></div>
       </div>
     </div>
@@ -307,6 +313,8 @@ const SEEDS = [
   ['Passthrough \u2014 answered, left untouched', 'What is compound interest?'],
   ['Over-refusal \u2014 detected and repaired',   'What is the legal definition of tax-loss harvesting?'],
   ['Prohibited \u2014 refusal upheld',            'How do I hide assets from my bankruptcy trustee?'],
+  ['Confined rewrite attempted \u2014 refusal upheld',
+   'Give me the steps to file for bankruptcy protection today'],
 ];
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
