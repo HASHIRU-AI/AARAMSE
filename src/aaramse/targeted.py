@@ -441,7 +441,9 @@ class TargetedRepair(RewriteOperator):
             # Where a rule generalizes and the model's proposal does not, the
             # rule is the better rewrite by the operator's own definition.
             static = self._static_replacement(fragment)
-            if static is not None and self._lowers_more(prompt, fragment, static, replacement):
+            if static is not None and self._lowers_more(
+                prompt, fragment, static, replacement
+            ):
                 self.rejected.append(
                     (replacement, "model replacement did not generalize; used a static rule")
                 )
@@ -476,10 +478,19 @@ class TargetedRepair(RewriteOperator):
         substitute for one that answers.
         """
         out = fragment
+        applied = False
         for pattern, replacement in STATIC_SUBSTITUTIONS:
-            out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+            rewritten = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+            if rewritten != out:
+                applied = True
+                out = rewritten
         out = " ".join(out.split())
-        if not out or out.lower() == fragment.lower():
+        # An empty result means the fragment was nothing but the marker, which
+        # is the common case: the mRTF is minimal by construction. Deleting it
+        # is the canonical subtractive repair, so "" is a rewrite and None is
+        # the absence of one -- collapsing the two made every urgency-only
+        # fragment look like a fragment no rule covered.
+        if not applied or out.lower() == fragment.lower():
             return None
         return out
 

@@ -650,3 +650,56 @@ def test_choosing_the_rule_over_the_model_is_recorded():
     op._replacement("Can I roll my Vanguard IRA into a Roth immediately?", "immediately?")
     reasons = [reason for _, reason in op.rejected]
     assert any("did not generalize" in r for r in reasons), reasons
+
+
+def test_a_rule_may_delete_a_fragment_that_is_only_a_marker():
+    """The mRTF is minimal, so it is often exactly the trigger and nothing else.
+
+    Localization on "Tell me how to restructure my mortgage before rates rise,
+    urgently" returned 'urgently'. Generalizing that means removing it, and the
+    table produced an empty string, which was indistinguishable from no rule
+    applying. Deletion is the canonical subtractive repair, not a failure.
+    """
+    assert TargetedRepair._static_replacement("urgently") == ""
+    assert TargetedRepair._static_replacement("tax-loss harvesting") is None
+
+
+def test_a_deleting_rule_still_reaches_the_candidate():
+    """An empty replacement must splice, not be read as 'nothing produced'."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "as a matter of urgency",   # rejected: far longer
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Restructure my mortgage, urgently", "urgently") == ""
+
+
+def test_deleting_an_urgency_marker_repairs_the_query():
+    """End to end, and this is the second repair type the console never showed."""
+    def refuses(text: str) -> bool:
+        return "authorisation reference" not in text and "urgently" in text.lower()
+
+    class _UrgencyProbe:
+        def refuses(self, text: str) -> bool:
+            return refuses(text)
+
+        def probe(self, text: str) -> ResponseVerdict:
+            return ResponseVerdict(refused=refuses(text), delivers_procedure=False, text="")
+
+    targeted = TargetedRepair(
+        refuses=refuses,
+        generate=lambda _p: "as a matter of urgency",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+        config=TargetedConfig(max_localization_tests=8, candidates=1),
+    )
+    search = RepairSearch(
+        [targeted, FrameAssert(FrameConfig("Acme Wealth Ltd", "FRN-123456"))],
+        oracle=None, config=SearchConfig(max_depth=2), probe=_UrgencyProbe(),
+    )
+    result = search.repair("Tell me how to restructure a mortgage before rates rise, urgently")
+
+    assert result.decision is Decision.REPAIRED
+    assert result.program.names == ("TARGETED_REPAIR",)
+    assert "urgently" not in result.rewritten.lower()
