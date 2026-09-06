@@ -432,6 +432,20 @@ class TargetedRepair(RewriteOperator):
             if len(replacement.split()) > cap:
                 self.rejected.append((replacement, "replacement far longer than fragment"))
                 continue
+
+            # A replacement that does not lower actionability is not a
+            # generalization, and generalization is the constraint the whole
+            # method rests on. muse-spark-1.2 answered the mRTF "immediately?"
+            # with "right away": a swap of one urgency marker for another,
+            # which the model then refused exactly as it refused the original.
+            # Where a rule generalizes and the model's proposal does not, the
+            # rule is the better rewrite by the operator's own definition.
+            static = self._static_replacement(fragment)
+            if static is not None and self._lowers_more(prompt, fragment, static, replacement):
+                self.rejected.append(
+                    (replacement, "model replacement did not generalize; used a static rule")
+                )
+                return static
             return replacement
 
         static = self._static_replacement(fragment)
@@ -439,6 +453,19 @@ class TargetedRepair(RewriteOperator):
             logger.info("using a static generalization for %r", fragment)
             return static
         return None
+
+    def _lowers_more(
+        self, prompt: str, fragment: str, candidate: str, incumbent: str
+    ) -> bool:
+        """Return True when `candidate` generalizes the prompt further.
+
+        Scored on the whole prompt rather than the fragment, because
+        actionability is a property of the request and a fragment out of
+        context does not have one.
+        """
+        with_candidate = self._scorer.score(prompt.replace(fragment, candidate, 1))
+        with_incumbent = self._scorer.score(prompt.replace(fragment, incumbent, 1))
+        return with_candidate < with_incumbent
 
     @staticmethod
     def _static_replacement(fragment: str) -> Optional[str]:

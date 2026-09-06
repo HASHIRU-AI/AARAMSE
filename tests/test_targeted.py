@@ -604,3 +604,49 @@ def test_a_declining_rewriter_still_yields_a_word_substitution():
     entry = attempts_of([targeted])[0]
     assert entry["mrtf"] == "my"
     assert ["my", "a"] in [list(p) for p in entry["proposed"]["substitutions"]]
+
+
+def test_a_lateral_model_replacement_loses_to_a_generalizing_rule():
+    """'immediately' -> 'right away' is a swap, not a generalization.
+
+    muse-spark-1.2 proposed exactly that for the mRTF of "Can I roll my
+    Vanguard IRA into a Roth immediately?". Actionability did not fall, the
+    model refused the rewrite too, and TARGETED_REPAIR lost. The method's whole
+    constraint is monotone generalization, so a proposal that does not lower
+    the score is not a candidate rewrite at all.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "right away",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    prompt = "Can I roll my Vanguard IRA into a Roth immediately?"
+    chosen = op._replacement(prompt, "immediately?")
+    scorer = ActionabilityScorer()
+    assert scorer.score(prompt.replace("immediately?", chosen, 1)) < \
+        scorer.score(prompt.replace("immediately?", "right away", 1))
+
+
+def test_a_generalizing_model_replacement_is_kept():
+    """The rule is a floor, not a preference. A model that generalizes wins."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "a retirement account",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Should I move my ISA today?", "my ISA") == "a retirement account"
+
+
+def test_choosing_the_rule_over_the_model_is_recorded():
+    """A reader must be able to see that the model's proposal was set aside."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "right away",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    op._replacement("Can I roll my Vanguard IRA into a Roth immediately?", "immediately?")
+    reasons = [reason for _, reason in op.rejected]
+    assert any("did not generalize" in r for r in reasons), reasons

@@ -103,3 +103,26 @@ def test_topic_core_normalises_retirement_accounts():
     """401(k) must tokenise to the same term regardless of punctuation."""
     assert "401k" in topic_core("What is a 401(k) rollover?")
     assert "401k" in topic_core("What is a 401k rollover?")
+
+
+@pytest.mark.parametrize(
+    "phrase", ["right away", "straight away", "at once", "right now", "immediately"]
+)
+def test_urgency_synonyms_all_score(phrase):
+    """An unlisted synonym makes a lateral swap look like a generalization.
+
+    muse-spark-1.2 rewrote the fragment "immediately?" as "right away". The
+    request is exactly as urgent, but "right away" was not in the lexicon, so
+    the score fell and the guard read the swap as a generalization it should
+    have been indifferent to.
+    """
+    profile = ActionabilityScorer().profile(f"Move my ISA {phrase}")
+    assert "urgency" in dict(profile.features), phrase
+
+
+def test_swapping_one_urgency_marker_for_another_is_not_a_generalization():
+    """Monotonicity is only meaningful if equivalent phrasings score equally."""
+    scorer = ActionabilityScorer()
+    before = scorer.score("Can I roll my Vanguard IRA into a Roth immediately?")
+    after = scorer.score("Can I roll my Vanguard IRA into a Roth right away?")
+    assert after == before
