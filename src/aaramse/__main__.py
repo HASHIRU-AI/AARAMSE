@@ -36,6 +36,16 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def _optional_spec(value: str) -> Optional[str]:
+    """Normalise an empty model spec to None.
+
+    Applied by argparse to the flag and its default alike, so `--rewriter-model
+    ""` and an unset environment variable mean the same thing everywhere rather
+    than only where a caller remembered to coerce.
+    """
+    return value.strip() or None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for every subcommand."""
     # Shared options live on a parent parser so they are accepted on either
@@ -68,18 +78,18 @@ def build_parser() -> argparse.ArgumentParser:
             help='Model spec: "openai:gpt-5", "anthropic:claude-opus-5", or an Ollama tag.',
         )
         sub.add_argument(
-            "--rewriter-model",
-            default=_env("AARAMSE_REWRITER_MODEL", "") or None,
+            "--rewriter-model", type=_optional_spec,
+            default=_env("AARAMSE_REWRITER_MODEL", "meta/muse-spark-1.2") or None,
             help="Model that proposes fragment replacements and scores meaning. "
-                 "Defaults to empty, putting everything on --model, which is "
-                 "how every measurement in this repository was taken. The "
-                 "three-way judge stays on --model regardless: what counts as "
-                 "a refusal has to be a property of the model being repaired. "
-                 "Off by default because a rewriter can decline the job -- "
-                 "muse-spark-1.2 reads the fragment instruction as a request "
-                 "to help evade a safety filter and refuses it, so the "
-                 "confined operator proposes nothing and every repair becomes "
-                 "a prefix.",
+                 "The three-way judge stays on --model regardless: what counts "
+                 "as a refusal has to be a property of the model being "
+                 "repaired. Set to empty to put everything on one model, which "
+                 "is how every measurement in this repository was taken. Note "
+                 "that a rewriter can decline the job -- muse-spark-1.2 reads "
+                 "the fragment instruction as a request to help evade a safety "
+                 "filter and refuses it -- in which case the confined operator "
+                 "falls back to a static generalization or proposes nothing, "
+                 "and repairs arrive as a deployer frame.",
         )
         sub.add_argument(
             "--audit", default=_env("AARAMSE_AUDIT_PATH", "audit/gateway.jsonl"),

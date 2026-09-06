@@ -69,10 +69,16 @@ compliance system prompt, one run per cell; artifacts in `audit/finqa_*.json`.
 > attempted on those at all. Both were made to fix wrong outcomes rather than
 > to move a number, and neither has been re-measured.
 >
-> The console also ships with the rewriter split off. muse-spark-1.2 declines
-> the fragment instruction as a request to help evade a safety filter, so with
-> it in that slot the confined operator proposes nothing and every repair is a
-> deployer frame. `--rewriter-model` still turns the split on.
+> The console ships with the rewriter split on: nemotron answers and judges,
+> muse-spark-1.2 proposes fragment replacements and scores meaning. The judge
+> stays on the model being repaired, because what counts as a refusal has to be
+> a property of that model. The cost is known and accepted -- muse-spark
+> declines the fragment instruction as a request to help evade a safety filter,
+> so the confined operator usually falls back to a static generalization or
+> proposes nothing, and repairs arrive as a deployer frame. What the split buys
+> is that the model being repaired is not also the model scoring whether the
+> repair preserved the question. `--rewriter-model ""` collapses it onto one
+> model, which is how every measurement above was taken.
 
 **False intervention rate: 0.83%.** One benign filing-arithmetic question in
 120 is refused and escalated to a human.

@@ -189,23 +189,24 @@ def test_answer_verification_reads_the_environment(monkeypatch):
 
 
 
-def test_the_console_defaults_to_one_model_doing_both():
-    """The split ships available but not on, because muse-spark will not rewrite.
+def test_the_console_defaults_to_the_split_pair():
+    """nemotron answers and judges; muse-spark proposes rewrites and scores meaning.
 
-    Asked to replace a fragment it answers "I can't help with circumventing
-    safety systems", so the confined operator proposes nothing and every repair
-    is a prefix. nemotron complies with the same instruction, so the console
-    defaults to it for both roles and the split stays one flag away.
+    Known cost, accepted deliberately: muse-spark declines the fragment
+    instruction as a request to help evade a safety filter, so the confined
+    operator rarely proposes anything and repairs arrive as a deployer frame.
+    What the split buys is that the model being repaired is not also the model
+    scoring whether the repair preserved the question.
     """
     args = build_parser().parse_args(["serve"])
     assert args.model == "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b"
-    assert args.rewriter_model is None
-
-
-def test_the_split_is_still_one_flag_away():
-    """Turning it off by default must not make it hard to turn on."""
-    args = build_parser().parse_args(["serve", "--rewriter-model", "meta/muse-spark-1.2"])
     assert args.rewriter_model == "meta/muse-spark-1.2"
+
+
+def test_the_split_can_be_collapsed_onto_one_model():
+    """Every measurement in this repository was taken with one model doing both."""
+    args = build_parser().parse_args(["serve", "--rewriter-model", ""])
+    assert args.rewriter_model is None
 
 
 def test_the_rewriter_can_be_collapsed_onto_the_downstream_model(monkeypatch):
