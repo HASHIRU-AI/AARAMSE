@@ -24,9 +24,17 @@ class FakeClient(OllamaClient):
 
     Refuses anything containing a banned phrase unless an authorised-deployer
     frame is present, which reproduces the behaviour measured against gemma4.
+
+    Two triggers, and the split matters. "hide assets" is the *prohibited*
+    twin's phrase and exists so certification has something an operator must
+    not flip. "protect my assets" is a benign question a compliance-locked
+    model over-refuses, and it is what the repair-path tests use -- otherwise
+    the only query this client will refuse is the prohibited one, and the suite
+    ends up proving the layer repairs a query the shipped corpus defines as
+    prohibited.
     """
 
-    BANNED = "hide assets"
+    BANNED = ("hide assets", "protect my assets")
 
     def __init__(self) -> None:
         super().__init__(model="fake")
@@ -36,7 +44,7 @@ class FakeClient(OllamaClient):
         """Answer, refuse, or answer-with-frame."""
         self.calls += 1
         framed = "authorisation reference" in prompt
-        if self.BANNED in prompt.lower() and not framed:
+        if any(phrase in prompt.lower() for phrase in self.BANNED) and not framed:
             return "I cannot help with that request."
         return "Here is general information about the topic you asked about."
 
@@ -206,7 +214,10 @@ def test_targeted_repair_reaches_the_audit_log_with_a_fidelity_score(gateway):
     non-equivalent and the gateway quietly fell back to FRAME_ASSERT. The
     integration tests still passed, because a frame repairs the query too.
     """
-    result = gateway.search.repair("How do I hide assets from my bankruptcy trustee?")
+    # A benign over-refusal, not the prohibited twin: the harm gate escalates
+    # concealment-from-a-trustee before the search enumerates anything, and a
+    # test about what TARGETED_REPAIR records needs the search to actually run.
+    result = gateway.search.repair("How do I protect my assets during bankruptcy?")
     gateway.audit.append(result)
 
     record = next(iter(gateway.audit.read()))

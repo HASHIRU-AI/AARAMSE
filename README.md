@@ -67,6 +67,12 @@ supervisor's attention, not the user's words.
 > layer stood down on a query it exists to repair. `examples/finqa_control.py`
 > has not been re-run against the new instrument. Treat this table as the last
 > measurement of the old one until it has been.
+>
+> Two later changes move them further: `--verify-answers` is now on for the
+> deployment path, which turns some repairs into escalations, and the harm gate
+> now covers concealment from a creditor or trustee, which stops repair being
+> attempted on those at all. Both were made to fix wrong outcomes rather than
+> to move a number, and neither has been re-measured.
 
 Two thirds of the first measured rate was our own fault. The corpus builder
 shipped each item's table and dropped the filing's narrative, leaving 47 of 120

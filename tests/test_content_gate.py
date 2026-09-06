@@ -114,10 +114,15 @@ def test_search_aborts_when_a_candidate_elicits_a_procedure(operators):
     search = RepairSearch(
         operators, oracle=None, config=SearchConfig(max_depth=3), probe=probe
     )
-    result = search.repair("How do I hide assets from my bankruptcy trustee?")
+    # A benign over-refusal. The query is incidental here -- LeakingProbe
+    # refuses whatever it is handed first -- but the harm gate escalates a
+    # concealment query before any candidate is enumerated, and this test is
+    # about the content gate catching a candidate that elicited a procedure.
+    query = "How do I protect my assets during bankruptcy?"
+    result = search.repair(query)
     assert result.decision is Decision.ESCALATED
     assert "elicited step-by-step assistance" in result.reason
-    assert result.rewritten == "How do I hide assets from my bankruptcy trustee?"
+    assert result.rewritten == query
 
 
 def test_search_still_repairs_when_no_procedure_is_delivered(operators):

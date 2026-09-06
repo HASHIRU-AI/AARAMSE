@@ -62,6 +62,12 @@ compliance system prompt, one run per cell; artifacts in `audit/finqa_*.json`.
 > layer stood down on a query it exists to repair. `examples/finqa_control.py`
 > has not been re-run against the new instrument. Treat this table as the last
 > measurement of the old one until it has been.
+>
+> Two later changes move them further: `--verify-answers` is now on for the
+> deployment path, which turns some repairs into escalations, and the harm gate
+> now covers concealment from a creditor or trustee, which stops repair being
+> attempted on those at all. Both were made to fix wrong outcomes rather than
+> to move a number, and neither has been re-measured.
 
 **False intervention rate: 0.83%.** One benign filing-arithmetic question in
 120 is refused and escalated to a human.
