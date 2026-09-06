@@ -227,7 +227,13 @@ class TargetedRepair(RewriteOperator):
         localization = localize_mrtf(
             text, self._refuses, max_tests=self._config.max_localization_tests
         )
-        self.last_localization = localization
+        # Kept only when it found something. The search applies this operator
+        # again at depth 2, against text a frame has already been prepended to,
+        # where localization usually fails -- and overwriting a successful
+        # result with that None makes the console report no fragment on a turn
+        # where one was found and edited.
+        if localization is not None and localization.text:
+            self.last_localization = localization
         if localization is None or not localization.text:
             self.rejected.append((text, "no mRTF localized"))
             return None
@@ -386,6 +392,13 @@ class TargetedRepair(RewriteOperator):
 
             replacement = raw.strip().strip('"').strip().split("\n")[0].strip().strip('".')
             if not replacement or replacement.lower() == fragment.lower():
+                # Recorded rather than dropped. This branch was silent, so a
+                # rewriter that echoed the fragment back was indistinguishable
+                # in the trace from one that was never asked.
+                self.rejected.append((
+                    raw.strip()[:120] or "(empty)",
+                    "replacement empty or unchanged from the fragment",
+                ))
                 return None
             cap = max(3, len(fragment.split()) * self._config.max_replacement_ratio)
             if len(replacement.split()) > cap:

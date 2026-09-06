@@ -413,3 +413,50 @@ def test_attempts_are_cleared_between_turns():
     op.reset()
     assert op.rejected == []
     assert op.last_localization is None
+
+
+def test_a_later_failure_does_not_erase_an_earlier_localization():
+    """The search applies operators repeatedly within one turn.
+
+    At depth 2 the operator runs against text a frame has already been prepended
+    to, where localization usually fails. Overwriting the successful depth-1
+    result with that None makes the console report no fragment on a turn where
+    one was found and edited.
+    """
+    calls = {"n": 0}
+
+    def refuses(text: str) -> bool:
+        # Refuses the bare prompt; the framed variant is answered, so
+        # localization succeeds on the first and fails on the second.
+        return "authorisation reference" not in text and "hide assets" in text.lower()
+
+    op = TargetedRepair(
+        refuses=refuses,
+        generate=lambda _p: "protect assets lawfully",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    op.apply(PROMPT)
+    found = op.last_localization
+    assert found is not None, "the first application should have localized a fragment"
+
+    op.apply("The following question is answered ... authorisation reference FRN-1. " + PROMPT)
+    assert op.last_localization is found, "a later failure erased the earlier localization"
+
+
+def test_a_degenerate_replacement_is_recorded_not_dropped():
+    """Returning the fragment unchanged left no trace at all.
+
+    Three declines and no proposal looked like the retry never ran, when in
+    fact it ran and echoed the fragment back. A silent branch is the one thing
+    a trace panel cannot show.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda _p: "hide assets",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    op._replacement(PROMPT, "hide assets")
+    reasons = [reason for _, reason in op.rejected]
+    assert any("unchanged" in r for r in reasons), reasons
