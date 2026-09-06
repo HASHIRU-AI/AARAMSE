@@ -73,6 +73,11 @@ supervisor's attention, not the user's words.
 > now covers concealment from a creditor or trustee, which stops repair being
 > attempted on those at all. Both were made to fix wrong outcomes rather than
 > to move a number, and neither has been re-measured.
+>
+> The console also ships with the rewriter split off. muse-spark-1.2 declines
+> the fragment instruction as a request to help evade a safety filter, so with
+> it in that slot the confined operator proposes nothing and every repair is a
+> deployer frame. `--rewriter-model` still turns the split on.
 
 Two thirds of the first measured rate was our own fault. The corpus builder
 shipped each item's table and dropped the filing's narrative, leaving 47 of 120

@@ -69,12 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
         )
         sub.add_argument(
             "--rewriter-model",
-            default=_env("AARAMSE_REWRITER_MODEL", "meta/muse-spark-1.2") or None,
+            default=_env("AARAMSE_REWRITER_MODEL", "") or None,
             help="Model that proposes fragment replacements and scores meaning. "
-                 "The three-way judge stays on --model regardless: what counts "
-                 "as a refusal has to be a property of the model being "
-                 "repaired. Set to empty to put everything on one model, which "
-                 "is how every measurement in this repository was taken.",
+                 "Defaults to empty, putting everything on --model, which is "
+                 "how every measurement in this repository was taken. The "
+                 "three-way judge stays on --model regardless: what counts as "
+                 "a refusal has to be a property of the model being repaired. "
+                 "Off by default because a rewriter can decline the job -- "
+                 "muse-spark-1.2 reads the fragment instruction as a request "
+                 "to help evade a safety filter and refuses it, so the "
+                 "confined operator proposes nothing and every repair becomes "
+                 "a prefix.",
         )
         sub.add_argument(
             "--audit", default=_env("AARAMSE_AUDIT_PATH", "audit/gateway.jsonl"),

@@ -189,10 +189,22 @@ def test_answer_verification_reads_the_environment(monkeypatch):
 
 
 
-def test_the_console_defaults_to_the_split_pair():
-    """NIM answers and judges; Muse Spark proposes rewrites and scores meaning."""
+def test_the_console_defaults_to_one_model_doing_both():
+    """The split ships available but not on, because muse-spark will not rewrite.
+
+    Asked to replace a fragment it answers "I can't help with circumventing
+    safety systems", so the confined operator proposes nothing and every repair
+    is a prefix. nemotron complies with the same instruction, so the console
+    defaults to it for both roles and the split stays one flag away.
+    """
     args = build_parser().parse_args(["serve"])
     assert args.model == "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+    assert args.rewriter_model is None
+
+
+def test_the_split_is_still_one_flag_away():
+    """Turning it off by default must not make it hard to turn on."""
+    args = build_parser().parse_args(["serve", "--rewriter-model", "meta/muse-spark-1.2"])
     assert args.rewriter_model == "meta/muse-spark-1.2"
 
 
