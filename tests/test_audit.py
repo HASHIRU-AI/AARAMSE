@@ -86,8 +86,18 @@ def test_escalation_records_serialized_diagnostics(tmp_path, search, operators, 
     assert records[1]["decision"] == "escalated"
     diag = records[1]["diagnostics"]
     assert diag is not None
-    assert set(diag) == {"candidates_generated", "probed_refused", "blocked_candidates"}
+    assert set(diag) == {
+        "candidates_generated",
+        "probed_refused",
+        "blocked_candidates",
+        "answered_other",
+        "failure_class",
+    }
     assert isinstance(diag["blocked_candidates"], list)
+    # The counter that distinguishes answered_different from model_upheld was
+    # computed, used for triage, and then dropped on the way to the log.
+    assert isinstance(diag["answered_other"], int)
+    assert diag["failure_class"] == records[1]["diagnostics"]["failure_class"]
     assert log.verify() is None
 
 

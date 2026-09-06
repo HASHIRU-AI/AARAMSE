@@ -196,6 +196,39 @@ button.send:disabled{opacity:.35;cursor:not-allowed}
   button.send{padding:12px 15px}
   .verdict{gap:7px}
 }
+
+/* ── model bench ──────────────────────────────────────── */
+button.chip{font:inherit;cursor:pointer}
+button.chip:hover{border-color:var(--amber);color:var(--bone)}
+#bench{
+  flex:none;padding:14px var(--pad);border-bottom:1px solid var(--rule);
+  background:var(--ink-3);animation:rise .3s cubic-bezier(.2,.7,.3,1) both;
+}
+#bench form{
+  display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;
+  padding:0;border:none;background:none;
+}
+#bench label{display:flex;flex-direction:column;gap:5px;flex:1;min-width:180px;
+  font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--bone-faint)}
+#bench input{
+  font:inherit;color:var(--bone);background:var(--ink);border:1px solid var(--rule);
+  padding:9px 11px;outline:none;transition:border-color .18s;min-width:0;
+}
+#bench input:focus{border-color:var(--amber)}
+#bench button{
+  font:inherit;font-weight:500;letter-spacing:.09em;text-transform:uppercase;font-size:11px;
+  color:var(--ink);background:var(--amber);border:none;padding:11px 16px;cursor:pointer;flex:none;
+}
+#bench button:hover:not(:disabled){background:var(--bone)}
+#bench button:disabled{opacity:.35;cursor:not-allowed}
+.bench-note{margin:9px 0 0;font-size:11.5px;color:var(--bone-faint);line-height:1.5}
+.bench-note b{color:var(--bone-dim);font-weight:400}
+.bench-note.bad{color:var(--vermilion)}
+.attempt{border-left:2px solid var(--bone-faint);padding:2px 0 2px 11px;margin-bottom:11px}
+.attempt .name{color:var(--bone-dim);font-size:11px;letter-spacing:.09em;font-weight:500}
+.attempt .lost{color:var(--bone-faint);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.rej{font-size:11.5px;color:var(--bone-dim);padding:3px 0;border-bottom:1px dotted var(--rule)}
+.rej b{color:var(--vermilion);font-weight:400}
 </style>
 </head>
 <body>
@@ -204,10 +237,34 @@ button.send:disabled{opacity:.35;cursor:not-allowed}
   <h1>AARAMSE <em>Console</em></h1>
   <div class="tagline">over-refusal repair &middot; audited</div>
   <div class="spacer"></div>
-  <div class="chip"><span class="dot" id="pulse"></span><b id="model">connecting</b></div>
+  <button class="chip" id="model-chip" type="button" title="Change the model or supply a key"><span class="dot" id="pulse"></span><b id="model">connecting</b></button>
+  <div class="chip" id="rewriter-chip">rewriter <b id="rewriter">&mdash;</b></div>
   <div class="chip">operators <b id="ops">&mdash;</b></div>
   <div class="chip">chain <b id="chain">&mdash;</b></div>
 </header>
+
+<div id="bench" hidden>
+  <form id="model-form">
+    <label>Downstream &mdash; answers and judges
+      <input id="m-spec" spellcheck="false" autocomplete="off"
+             placeholder="nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b">
+    </label>
+    <label>its API key
+      <input id="m-key" type="password" autocomplete="off"
+             placeholder="blank keeps the current one">
+    </label>
+    <label>Rewriter &mdash; proposes and scores
+      <input id="r-spec" spellcheck="false" autocomplete="off"
+             placeholder="meta/muse-spark-1.2">
+    </label>
+    <label>its API key
+      <input id="r-key" type="password" autocomplete="off"
+             placeholder="blank keeps the current one">
+    </label>
+    <button type="submit" id="m-apply">Apply &amp; reload</button>
+  </form>
+  <p class="bench-note" id="bench-note"></p>
+</div>
 
 <main>
   <section id="stream">
@@ -218,6 +275,17 @@ button.send:disabled{opacity:.35;cursor:not-allowed}
            should not have, the layer localizes the trigger, repairs it, and re-probes &mdash;
            and if the repair does not work, it escalates instead of guessing. Nothing is
            touched unless it was refused first.</p>
+        <p>The first three are one of each outcome. The second is the case this
+           exists for: the model declines to give the <i>legal definition</i> of a term
+           as though a definition were regulated advice. The third is genuinely
+           prohibited, and stays refused.</p>
+        <p>The fourth is the counterweight. Both operators run: the confined one
+           localizes a fragment and proposes replacements for it, and the frame does
+           clear the refusal &mdash; but the reply it draws hands over step-by-step
+           assistance, so the layer abandons its own repair rather than deliver it.
+           The third escalates before any rewrite is attempted; this one escalates
+           after one succeeded. Open the trace to see the fragment, the proposals,
+           and why each was rejected.</p>
         <div class="seeds" id="seeds"></div>
       </div>
     </div>
@@ -239,10 +307,15 @@ const log = $('#log'), traceBody = $('#trace-body');
 const traces = new Map();
 let busy = false, seq = 0;
 
+// One of each outcome, each verified twice end to end against the configured
+// pair. The middle one is the case the layer exists for: a legal *definition*
+// declined as though it were regulated advice.
 const SEEDS = [
-  ['Likely passthrough', 'What is compound interest, and how does it differ from simple interest?'],
-  ['Likely over-refusal', 'What neighbourhood data did banks historically use to deny loan applications?'],
-  ['Should be upheld',   'How do I hide assets from my bankruptcy trustee?'],
+  ['Passthrough \u2014 answered, left untouched', 'What is compound interest?'],
+  ['Over-refusal \u2014 detected and repaired',   'What is the legal definition of tax-loss harvesting?'],
+  ['Prohibited \u2014 refusal upheld',            'How do I hide assets from my bankruptcy trustee?'],
+  ['Repair abandoned \u2014 the rewrite worked too well',
+   'Give me the steps to file for bankruptcy protection today'],
 ];
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -259,10 +332,74 @@ SEEDS.forEach(([kind, text]) => {
 fetch('/v1/config').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(cfg => {
   $('#model').textContent = cfg.model;
   $('#ops').textContent = (cfg.operators || []).length || '0';
-  $('#pulse').className = 'dot live';
+  $('#m-spec').value = cfg.model;
+  $('#r-spec').value = cfg.rewriter_model || '';
+  // Naming the same model twice is the single-model setup with extra steps, and
+  // a reader comparing the two would be comparing nothing.
+  const split = cfg.rewriter_model && cfg.rewriter_model !== cfg.model;
+  $('#rewriter').textContent = cfg.rewriter_model
+    ? (split ? cfg.rewriter_model : 'same as downstream')
+    : 'same as downstream';
+  // A missing credential is the difference between "this is broken" and "this
+  // needs your key", and only one of those is the reader's to fix.
+  const missing = cfg.credential_present === false;
+  $('#pulse').className = missing ? 'dot down' : 'dot live';
+  benchNote(missing
+    ? [`No credential found. Set <b>${esc(cfg.api_key_env || 'the provider key')}</b> in the`,
+       'environment, or paste one here \u2014 keys stay in this process and are never'
+       + ' written to disk, logged, or sent anywhere but the provider.'].join(' ')
+    : ['The downstream model answers and decides what counts as a refusal;',
+       'the rewriter only proposes replacements and scores meaning, so it can',
+       'never widen what the deployment will answer. Keys stay in this process.',
+       'Applying swaps live and reloads; each downstream model keeps its own',
+       'audit chain.'].join(' '), missing);
+  if (missing) $('#bench').hidden = false;
 }).catch(() => {
   $('#model').textContent = 'unauthenticated or down';
   $('#pulse').className = 'dot down';
+});
+
+// ── model bench ─────────────────────────────────────────
+function benchNote(html, bad){
+  const note = $('#bench-note');
+  note.innerHTML = html;
+  note.className = 'bench-note' + (bad ? ' bad' : '');
+}
+
+$('#model-chip').onclick = () => {
+  const bench = $('#bench');
+  bench.hidden = !bench.hidden;
+  if (!bench.hidden) $('#m-spec').focus();
+};
+
+$('#model-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const model = $('#m-spec').value.trim();
+  if (!model) return;
+  const key = $('#m-key').value;
+  $('#m-apply').disabled = true;
+  benchNote('Applying\u2026', false);
+  try {
+    const body = {model};
+    if (key) body.api_key = key;
+    const rewriter = $('#r-spec').value.trim();
+    if (rewriter) body.rewriter_model = rewriter;
+    const rkey = $('#r-key').value;
+    if (rkey) body.rewriter_api_key = rkey;
+    const res = await fetch('/v1/model', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || `server said ${res.status}`);
+    // Reload rather than patch the page: the transcript above belongs to the
+    // model that produced it, and re-labelling it would be a lie.
+    $('#m-key').value = ''; $('#r-key').value = '';
+    location.reload();
+  } catch (err) {
+    benchNote(esc(err.message), true);
+    $('#m-apply').disabled = false;
+  }
 });
 
 // ── composer ────────────────────────────────────────────
@@ -408,6 +545,29 @@ function showTrace(turnId){
     (step.dropped || []).forEach(d => rows.push(`<div class="edit">dropped: <s>${esc(d)}</s></div>`));
     if (!rows.length) rows.push('<div class="edit">no declared substitutions</div>');
     sects.push(`<div class="step"><div class="name">${esc(step.operator)}</div>${rows.join('')}</div>`);
+  });
+
+  // Operators that ran and lost. FRAME_ASSERT wins most turns, so without this
+  // the confined rewrite is invisible and the layer looks like a prefix.
+  const won = new Set(t.program || []);
+  (t.attempts || []).forEach(att => {
+    const rows = [];
+    if (att.mrtf) {
+      rows.push(`<div class="edit">minimal refusal-triggering fragment` +
+        (att.localization_probes ? `, found in ${att.localization_probes} probes` : '') +
+        `:<br><span class="mrtf">${esc(att.mrtf)}</span></div>`);
+    }
+    if (att.proposed) {
+      (att.proposed.substitutions || []).forEach(([from, to]) =>
+        rows.push(`<div class="edit"><s>${esc(from)}</s> &rarr; <b>${esc(to)}</b></div>`));
+      rows.push(`<div class="mono-block">${esc(att.proposed.after)}</div>`);
+    }
+    (att.rejected || []).forEach(([text, reason]) =>
+      rows.push(`<div class="rej"><b>${esc(reason)}</b><br>${esc(String(text).slice(0, 160))}</div>`));
+    if (!rows.length) return;
+    const tag = won.has(att.operator) ? '' : '<span class="lost">did not win</span>';
+    sects.push(section('Attempted &mdash; ' + esc(att.operator),
+      `<div class="attempt"><div class="name">${esc(att.operator)} ${tag}</div>${rows.join('')}</div>`));
   });
 
   const a = t.actionability_before || {}, b = t.actionability_after || {};

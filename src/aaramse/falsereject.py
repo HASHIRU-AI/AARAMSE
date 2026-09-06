@@ -16,7 +16,9 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
+
+from .splits import split_items
 
 __all__ = ["DEFAULT_CORPUS_PATH", "FinancePrompt", "load_benign", "load_toxic"]
 
@@ -51,19 +53,83 @@ def _load(path: Optional[Path] = None) -> dict:
         return json.load(handle)
 
 
-def load_benign(
-    limit: Optional[int] = None, path: Optional[Path] = None
+def _fold(
+    items: Sequence[FinancePrompt], fold: str, salt: str
 ) -> Tuple[FinancePrompt, ...]:
-    """Benign finance prompts that models commonly over-refuse."""
+    """Restrict a corpus to one fold of the deterministic split.
+
+    Splitting here rather than at the call site is deliberate. The harm gate's
+    patterns were authored against the certification fold, so a measurement that
+    slices the corpus in file order silently mixes seen and unseen items and
+    reports a number stronger than it is -- which is exactly what happened to
+    the first live run of `examples/e2e_smoke.py`.
+
+    Args:
+        items: The loaded corpus, in file order.
+        fold: One of "all", "certification", "evaluation".
+        salt: Split salt, passed through so a fold can be reproduced.
+
+    Returns:
+        The requested fold, in input order.
+
+    Raises:
+        ValueError: When `fold` is not one of the three accepted names.
+    """
+    if fold == "all":
+        return tuple(items)
+    if fold not in ("certification", "evaluation"):
+        raise ValueError(
+            f"fold must be 'all', 'certification' or 'evaluation', got {fold!r}"
+        )
+    split = split_items(items, key=lambda item: item.prompt, salt=salt)
+    return tuple(getattr(split, fold))
+
+
+def load_benign(
+    limit: Optional[int] = None,
+    path: Optional[Path] = None,
+    fold: str = "all",
+    salt: str = "aaramse-v1",
+) -> Tuple[FinancePrompt, ...]:
+    """Benign finance prompts that models commonly over-refuse.
+
+    Args:
+        limit: Keep at most this many items, applied *after* the fold so a
+            limited draw stays inside the requested fold.
+        path: Override the vendored corpus location.
+        fold: "all" (default, file order), "certification", or "evaluation".
+        salt: Split salt, ignored when `fold` is "all".
+
+    Returns:
+        The selected prompts, in corpus order.
+    """
     rows: List[dict] = _load(path)["benign"]
     items = [FinancePrompt(r["prompt"], r["category"], benign=True) for r in rows]
-    return tuple(items[:limit] if limit else items)
+    selected = _fold(items, fold, salt)
+    return tuple(selected[:limit] if limit else selected)
 
 
 def load_toxic(
-    limit: Optional[int] = None, path: Optional[Path] = None
+    limit: Optional[int] = None,
+    path: Optional[Path] = None,
+    fold: str = "all",
+    salt: str = "aaramse-v1",
 ) -> Tuple[FinancePrompt, ...]:
-    """Genuinely unsafe finance prompts, used to measure leakage."""
+    """Genuinely unsafe finance prompts, used to measure leakage.
+
+    Args:
+        limit: Keep at most this many items, applied *after* the fold so a
+            limited draw stays inside the requested fold.
+        path: Override the vendored corpus location.
+        fold: "all" (default, file order), "certification", or "evaluation".
+            Pass "evaluation" for any measurement that reports a leak or gate
+            rate; the harm patterns saw the certification fold.
+        salt: Split salt, ignored when `fold` is "all".
+
+    Returns:
+        The selected prompts, in corpus order.
+    """
     rows: List[dict] = _load(path)["toxic"]
     items = [FinancePrompt(r["prompt"], str(r["category"]), benign=False) for r in rows]
-    return tuple(items[:limit] if limit else items)
+    selected = _fold(items, fold, salt)
+    return tuple(selected[:limit] if limit else selected)

@@ -12,8 +12,10 @@ import time
 
 import pytest
 
+from aaramse.equivalence import SemanticEquivalence
 from aaramse.localize import Localization
 from aaramse.serve import CONSOLE_PATHS, GatewayService
+from aaramse.targeted import TargetedConfig, TargetedRepair
 from aaramse.types import (
     ActionabilityProfile,
     Decision,
@@ -21,7 +23,7 @@ from aaramse.types import (
     RepairResult,
     RewriteProgram,
 )
-from aaramse.ui import Job, JobStore, console_html, trace_of
+from aaramse.ui import Job, JobStore, attempts_of, console_html, trace_of
 
 
 def make_result(decision=Decision.REPAIRED, query="q", rewritten="r", steps=()):
@@ -237,3 +239,68 @@ def test_healthz_survives_the_console_taking_the_root(service):
     status, _, body = service.dispatch("GET", "/healthz", b"", None)
     assert status == 200
     assert json.loads(body)["status"] == "ok"
+
+
+def test_the_trace_shows_what_targeted_repair_tried_even_when_it_lost():
+    """FRAME_ASSERT wins most turns, so the confined operator is invisible.
+
+    A reader then sees only a prefix being prepended and never learns that the
+    layer localized a fragment and proposed a substitution for it. The attempt
+    is the interesting half of the method.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: "legal definition" in t.lower(),
+        generate=lambda _p: "statutory definition",
+        equivalence=SemanticEquivalence(generate=lambda _: "NO"),
+        config=TargetedConfig(candidates=1),
+    )
+    op.apply("What is the legal definition of tax-loss harvesting?")
+
+    attempts = attempts_of([op])
+    assert attempts, "the operator's attempt was not reported"
+    entry = attempts[0]
+    assert entry["operator"] == "TARGETED_REPAIR"
+    assert "legal definition" in (entry["mrtf"] or "")
+    assert entry["rejected"], "the rejection and its reason must be shown"
+
+
+def test_attempts_reach_the_trace():
+    """trace_of is what the console renders; the attempt has to be in it."""
+    trace = trace_of(
+        make_result(decision=Decision.REPAIRED),
+        answer="a",
+        attempts=[{"operator": "TARGETED_REPAIR", "mrtf": "legal definition",
+                   "localization_probes": 4, "rejected": [["x", "not equivalent"]]}],
+    )
+    assert trace["attempts"][0]["mrtf"] == "legal definition"
+    json.dumps(trace)
+
+
+def test_an_operator_with_nothing_to_report_is_omitted():
+    """A trace panel full of empty sections teaches a reader to skip it."""
+    op = TargetedRepair(config=TargetedConfig(candidates=1))
+    assert attempts_of([op]) == []
+
+
+def test_the_proposal_is_shown_even_when_the_search_discards_it():
+    """The substitution is the thing a reader wants to see.
+
+    TARGETED_REPAIR can localize a fragment, propose a replacement, and still
+    lose because the model refused the rewrite too and FRAME_ASSERT cleared it
+    instead. Recording only rejections hides the one edit that was made.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: "legal definition" in t.lower(),
+        generate=lambda _p: "statutory definition",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    application = op.apply("What is the legal definition of tax-loss harvesting?")
+    assert application is not None, "the operator should have produced a rewrite"
+
+    entry = attempts_of([op])[0]
+    assert entry["proposed"], "the proposed rewrite was not reported"
+    assert entry["proposed"]["after"] == application.after
+    assert ["legal definition", "statutory definition"] in [
+        list(pair) for pair in entry["proposed"]["substitutions"]
+    ]

@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 from types import FrameType
 from typing import Optional, Sequence
@@ -33,6 +34,16 @@ logger = logging.getLogger(__name__)
 def _env(name: str, default: str) -> str:
     """Read an environment variable, falling back to a default."""
     return os.environ.get(name, default)
+
+
+def _optional_spec(value: str) -> Optional[str]:
+    """Normalise an empty model spec to None.
+
+    Applied by argparse to the flag and its default alike, so `--rewriter-model
+    ""` and an unset environment variable mean the same thing everywhere rather
+    than only where a caller remembered to coerce.
+    """
+    return value.strip() or None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,8 +73,23 @@ def build_parser() -> argparse.ArgumentParser:
     def add_gateway_options(sub: argparse.ArgumentParser) -> None:
         """Options shared by every subcommand that builds a gateway."""
         sub.add_argument(
-            "--model", default=_env("AARAMSE_MODEL", "gemma4:12b"),
+            "--model",
+            default=_env("AARAMSE_MODEL", "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b"),
             help='Model spec: "openai:gpt-5", "anthropic:claude-opus-5", or an Ollama tag.',
+        )
+        sub.add_argument(
+            "--rewriter-model", type=_optional_spec,
+            default=_env("AARAMSE_REWRITER_MODEL", "meta/muse-spark-1.2") or None,
+            help="Model that proposes fragment replacements and scores meaning. "
+                 "The three-way judge stays on --model regardless: what counts "
+                 "as a refusal has to be a property of the model being "
+                 "repaired. Set to empty to put everything on one model, which "
+                 "is how every measurement in this repository was taken. Note "
+                 "that a rewriter can decline the job -- muse-spark-1.2 reads "
+                 "the fragment instruction as a request to help evade a safety "
+                 "filter and refuses it -- in which case the confined operator "
+                 "falls back to a static generalization or proposes nothing, "
+                 "and repairs arrive as a deployer frame.",
         )
         sub.add_argument(
             "--audit", default=_env("AARAMSE_AUDIT_PATH", "audit/gateway.jsonl"),
@@ -80,6 +106,26 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument(
             "--system-prompt", default=_env("AARAMSE_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
             help="Deployment compliance instruction.",
+        )
+        sub.add_argument(
+            "--localization-budget", type=int,
+            default=int(_env("AARAMSE_LOCALIZATION_BUDGET", "8")),
+            help="Delta-debugging probes per query (default: 8). The library "
+                 "default is 32, which is a measurement setting; localization "
+                 "dominates a repair's call burst and hosted free tiers "
+                 "throttle inside a single repair at that size. Raising it "
+                 "buys a finer fragment at the cost of latency and quota.",
+        )
+        sub.add_argument(
+            "--verify-answers", dest="verify_answers",
+            action=argparse.BooleanOptionalAction,
+            default=_env("AARAMSE_VERIFY_ANSWERS", "1") != "0",
+            help="Check that the reply to a repaired query still answers the "
+                 "question the user asked, and escalate when it does not "
+                 "(default: on). Off in the library, because it turns repairs "
+                 "into escalations and so moves the recovery rate; on here, "
+                 "because a repair whose reply is still a refusal is not a "
+                 "repair and must not be logged as one.",
         )
         sub.add_argument(
             "--allow-uncertified", action="store_true",
@@ -117,12 +163,50 @@ def _gateway(args: argparse.Namespace) -> Gateway:
     """Build a gateway from parsed arguments."""
     return Gateway.build(GatewayConfig(
         model=args.model,
+        rewriter_model=args.rewriter_model or None,
         system_prompt=args.system_prompt,
         deployer_name=args.deployer,
         authorisation_ref=args.authorisation_ref,
         audit_path=Path(args.audit),
+        localization_budget=args.localization_budget,
+        verify_answers=args.verify_answers,
         require_certificates=not args.allow_uncertified,
     ))
+
+
+def _shutdown_event() -> threading.Event:
+    """Install SIGINT/SIGTERM handlers that request shutdown.
+
+    The handler records the request rather than acting on it. Shutting the
+    server down from inside a signal handler means the only evidence that a
+    stop was actually asked for is the handler having run, and `signal.pause()`
+    cannot be trusted to report that -- see `_wait_for_shutdown`.
+    """
+    stopping = threading.Event()
+
+    def stop(signum: int, frame: Optional[FrameType]) -> None:
+        """Record that a shutdown was requested."""
+        logger.info("received signal %s; shutting down", signum)
+        stopping.set()
+
+    for received in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(received, stop)
+    return stopping
+
+
+def _wait_for_shutdown(stopping: threading.Event, poll: float = 1.0) -> None:
+    """Block until shutdown is actually requested.
+
+    This was `signal.pause()`, which returns on *any* interruption rather than
+    only on a handled SIGINT/SIGTERM, and the caller treated one return as a
+    stop request. LiteLLM's lazy first-call import interrupts it within about
+    two seconds, so the sidecar shut itself down on the first turn -- exit code
+    0, no traceback, no log line, which is the worst way for a demo to fail.
+    Waiting on the flag the handler sets is immune: a spurious wakeup resumes
+    the loop, and only a real request ends it.
+    """
+    while not stopping.wait(poll):
+        pass
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -136,18 +220,11 @@ def _serve(args: argparse.Namespace) -> int:
         _gateway(args), host=args.host, port=args.port,
     )
 
-    def stop(signum: int, frame: Optional[FrameType]) -> None:
-        """Shut the server down on SIGTERM/SIGINT so the container exits cleanly."""
-        logger.info("received signal %s; shutting down", signum)
-        server.shutdown()
-
-    for received in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(received, stop)
-
+    stopping = _shutdown_event()
     logger.info("serving on %s:%s", args.host, server.server_address[1])
     try:
-        signal.pause()
-    except (AttributeError, KeyboardInterrupt):  # pragma: no cover - platform dependent
+        _wait_for_shutdown(stopping)
+    except KeyboardInterrupt:  # pragma: no cover - depends on handler timing
         pass
     finally:
         server.shutdown()

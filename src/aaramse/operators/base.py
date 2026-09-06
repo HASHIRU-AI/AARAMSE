@@ -67,6 +67,15 @@ class RewriteOperator(ABC):
     def apply(self, text: str) -> Optional[OperatorApplication]:
         """Transform the text, or return None when the result is a no-op."""
 
+    def reset(self) -> None:  # noqa: B027 - a deliberate no-op default, not an abstract hook
+        """Forget any per-turn state. Concrete: most operators keep none.
+
+        An operator instance outlives the turn it runs in, so anything it
+        recorded about one query has to be cleared before the next, or a
+        console showing what the operator tried would attribute one reader's
+        attempt to another's question.
+        """
+
     def _application(
         self,
         before: str,

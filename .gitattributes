@@ -1,0 +1,4 @@
+# Normalise every text file to LF in the repo and in the working tree.
+# The Windows checkout was writing CRLF, which made every file show as
+# modified and made `git diff` unreadable.
+* text=auto eol=lf

@@ -23,15 +23,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple, Type
 
 from .client import ModelUnavailable
 from .gateway import Gateway
-from .ui import JobStore, baseline_of, console_html, trace_of
+from .providers import api_key_env_for, litellm_spec
+from .ui import JobStore, attempts_of, baseline_of, console_html, trace_of
 
 __all__ = [
     "MAX_BODY_BYTES",
@@ -51,6 +53,11 @@ MAX_BODY_BYTES = 64 * 1024
 TOKEN_ENV = "AARAMSE_API_TOKEN"
 
 Response = Tuple[int, str, bytes]
+
+
+def _model_slug(spec: str) -> str:
+    """Filesystem-safe stem for a model spec, for its own audit chain."""
+    return re.sub(r"[^a-z0-9]+", "-", spec.lower()).strip("-") or "model"
 
 
 def _html(status: int, payload: bytes) -> Response:
@@ -131,6 +138,8 @@ class GatewayService:
                 return self._chat_start(body)
             if method == "GET" and route.startswith("/v1/chat/"):
                 return self._chat_poll(route.rsplit("/", 1)[-1])
+            if method == "POST" and route == "/v1/model":
+                return self._swap_model(body)
             if method == "GET" and route == "/v1/config":
                 return _json(200, {
                     "model": self.gateway.config.model,
@@ -143,6 +152,13 @@ class GatewayService:
                         for name, cert in self.gateway.certificates.items()
                     },
                     "authenticated": self.token is not None,
+                    "api_key_env": api_key_env_for(self.gateway.config.model),
+                    "credential_present": self._credential_present(),
+                    "rewriter_model": self.gateway.config.rewriter_model,
+                    "rewriter_api_key_env": (
+                        api_key_env_for(self.gateway.config.rewriter_model)
+                        if self.gateway.config.rewriter_model else None
+                    ),
                 })
             if method == "GET" and route == "/v1/report":
                 with self.lock:
@@ -159,6 +175,82 @@ class GatewayService:
             logger.error("model backend unavailable: %s", error)
             return _json(503, {"error": "model backend unavailable", "detail": str(error)})
         return _json(404, {"error": "not found", "path": route})
+
+    def _credential_present(self) -> bool:
+        """Return whether the current model's credential is in the environment."""
+        env = api_key_env_for(self.gateway.config.model)
+        return env is None or bool(os.environ.get(env, "").strip())
+
+    def _swap_model(self, body: bytes) -> Response:
+        """Point the layer at a different model, with an optional credential.
+
+        The console is a local tool, which is the only reason this is
+        acceptable: a key posted here is put in this process's environment for
+        the provider to read, and is never written to disk, logged, echoed back,
+        or recorded in a run. Exposing this port would be exposing a credential
+        sink.
+
+        The audit path moves with the model. A hash chain spanning two models
+        describes neither of them, and `intervention_report` takes the model as
+        a parameter precisely because the records do not carry one.
+        """
+        if len(body) > MAX_BODY_BYTES:
+            return _json(413, {"error": "request body too large"})
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "body is not valid JSON"})
+        if not isinstance(payload, dict):
+            return _json(400, {"error": "body must be a JSON object"})
+
+        base = self.gateway.config
+        changes: Dict[str, Any] = {}
+
+        # Each slot moves on its own. Sending only one leaves the other alone,
+        # so a reader can change the model being repaired without silently
+        # also changing the instrument that repairs it.
+        for field_name, key_name in (("model", "api_key"), ("rewriter_model", "rewriter_api_key")):
+            raw = payload.get(field_name)
+            if raw is None:
+                continue
+            if not isinstance(raw, str) or not raw.strip():
+                return _json(400, {"error": f"'{field_name}' must be a non-empty string"})
+            try:
+                spec = litellm_spec(raw.strip())
+            except ValueError as error:
+                # A bad spec fails here as a sentence, rather than as a 503 on
+                # the reader's next turn with nothing saying which field was wrong.
+                return _json(400, {"error": str(error)})
+            changes[field_name] = spec
+            secret = payload.get(key_name)
+            env = api_key_env_for(spec)
+            if isinstance(secret, str) and secret.strip() and env:
+                os.environ[env] = secret.strip()
+
+        if not changes:
+            return _json(400, {"error": "name at least one of 'model' or 'rewriter_model'"})
+
+        with self.lock:
+            spec = changes.get("model", base.model)
+            audit = base.audit_path.parent / (
+                f"{base.audit_path.stem}_{_model_slug(spec)}{base.audit_path.suffix}"
+            )
+            self.gateway = Gateway.build(replace(base, audit_path=audit, **changes))
+            # Jobs describe turns taken against the previous pair; keeping them
+            # would let the console poll a trace and render it under a heading
+            # naming models that never produced it.
+            self.jobs = JobStore()
+
+        logger.info("models now %s / rewriter %s",
+                    self.gateway.config.model,
+                    self.gateway.config.rewriter_model or "(same)")
+        return _json(200, {
+            "model": self.gateway.config.model,
+            "rewriter_model": self.gateway.config.rewriter_model,
+            "api_key_env": api_key_env_for(self.gateway.config.model),
+            "credential_present": self._credential_present(),
+            "audit_path": str(self.gateway.config.audit_path),
+        })
 
     def _repair(self, body: bytes) -> Response:
         """Handle one repair request."""
@@ -235,6 +327,9 @@ class GatewayService:
                     audit=audit,
                     elapsed_s=time.monotonic() - started,
                     model_calls=self.gateway.client.calls - calls_at_start,
+                    # Read after the search, while the operators still hold this
+                    # turn's attempt; the next turn resets them.
+                    attempts=attempts_of(self.gateway.operators),
                 )
 
         job = self.jobs.start("chat", query, work, calls_at_start=calls_at_start)

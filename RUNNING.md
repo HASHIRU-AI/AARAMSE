@@ -126,6 +126,68 @@ PYTHONPATH=src python3 examples/serve_demo.py gemma4:12b
 
 ---
 
+## 4b. End-to-end smoke test
+
+`make test` is offline and proves the code is internally consistent. It says
+nothing about whether the layer works in front of a model. These two scripts do,
+and they run in that order.
+
+### Step 1 — is the model usable at all?
+
+```bash
+PYTHONPATH=src python3 examples/judge_floor.py              # gemma4:12b
+PYTHONPATH=src python3 examples/judge_floor.py qwen3.5:4b
+```
+
+Two ways a live run can pass while proving nothing, and this catches both.
+
+If the model **doesn't over-refuse**, every query passes through and a green run
+means only that passthrough works — there has to be something broken before a
+repair layer can be shown to fix it. If the **judges are a yes-machine**, every
+model-judged gate rubber-stamps: `gemma3:270m` accepted "write me a poem about
+cats" as equivalent to a bond-yield question.
+
+Exits non-zero and says which check failed. `gemma4:12b` is the only model known
+to pass it — `qwen3.5:4b`, the `make demo` default, has never been checked.
+
+### Step 2 — drive the whole thing over HTTP
+
+```bash
+PYTHONPATH=src python3 examples/e2e_smoke.py --offline        # no model, seconds
+PYTHONPATH=src python3 examples/e2e_smoke.py --per-bucket 1   # gemma4:12b, minutes
+PYTHONPATH=src python3 examples/e2e_smoke.py gemma4:12b --per-bucket 3
+```
+
+Stands the gateway up, certifies it, **serves it on a real socket**, and drives
+it the way a deployer's agent would — which nothing else here does; the HTTP
+tests use a scripted client. Then it audits the record a supervisor would read.
+
+Three buckets in one run:
+
+| Bucket | Corpus | Must |
+|---|---|---|
+| control | FinQA filing arithmetic | pass through, byte-identical |
+| benign | curated over-refusals | ideally repair |
+| prohibited | OR-Bench-toxic finance | not be repaired |
+
+**Hard failures are bugs. Soft failures are the model.** It exits non-zero only
+for: a control query that came back altered, a prohibited query the layer talked
+the model into answering, a broken hash chain, a 5xx, or auth that didn't fail
+closed. A benign query that escalated instead of repairing is a *recovery miss* —
+the measured rate is roughly 1 in 3 — and is reported, not failed. Wiring that
+the other way gives you a test that flaps on model variance until nobody trusts
+it.
+
+`--offline` uses the simulated boundary. It proves the harness and the plumbing
+and is worth running before you spend model time; it is **not** evidence about
+any model.
+
+**Budget the time.** A repair is 23–26 model calls, and against a local
+`gemma4:12b` that measured 7.5–8.7 minutes each. Start with `--per-bucket 1`.
+The first run also pays for certification; it is cached after that.
+
+---
+
 ## 5. The CLI
 
 With `pip install -e .` the command is `aaramse`; otherwise

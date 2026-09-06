@@ -69,6 +69,30 @@ class InterventionReport:
     certificates: Dict[str, Any] = field(default_factory=dict)
 
     @property
+    def exclusions(self) -> List[Dict[str, Any]]:
+        """Operators that hold a certificate but were not admitted.
+
+        Two causes, deliberately kept apart. `failed` means the operator flipped
+        a prohibited twin: it weakened the boundary and the evidence says so.
+        `untestable` means zero trials -- the corpus held nothing the operator
+        could act on, so the silence is about coverage, not about the operator.
+        A report that collapsed them would tell a reader an operator was safe
+        when in fact it was never asked.
+        """
+        found: List[Dict[str, Any]] = []
+        for name, cert in sorted(self.certificates.items()):
+            if cert.get("passed"):
+                continue
+            trials = int(cert.get("trials", 0))
+            found.append({
+                "operator": name,
+                "cause": "untestable" if trials == 0 else "failed",
+                "trials": trials,
+                "flips": int(cert.get("flips", 0)),
+            })
+        return found
+
+    @property
     def chain_intact(self) -> bool:
         """True when every record verifies against its predecessor."""
         return self.chain_break is None
@@ -84,6 +108,7 @@ class InterventionReport:
             "escalations": self.escalations,
             "repairs": self.repairs,
             "certificates": self.certificates,
+            "exclusions": self.exclusions,
         }
 
     def render_markdown(self, query_chars: int = DEFAULT_QUERY_CHARS) -> str:
@@ -98,6 +123,7 @@ class InterventionReport:
         lines.extend(self._integrity_section())
         lines.extend(self._volume_section())
         lines.extend(self._certificate_section())
+        lines.extend(self._coverage_section())
         lines.extend(self._escalation_section(query_chars))
         lines.extend(self._repair_section(query_chars))
         return "\n".join(lines).rstrip() + "\n"
@@ -164,6 +190,55 @@ class InterventionReport:
             "A certificate binds an operator to *this* model and *this* corpus. "
             "A different model voids it.",
         ])
+        return lines
+
+    def _coverage_section(self) -> List[str]:
+        """State what the certified algebra did *not* cover.
+
+        A report that lists only admitted operators invites the reader to
+        assume the rest passed. Where an operator was excluded, the size of the
+        algebra actually in force is the finding, and it belongs in the body.
+        """
+        lines = ["", "## Coverage", ""]
+        if not self.certificates:
+            lines.append(
+                "No certificates recorded, so there is nothing to report on "
+                "coverage. See the section above."
+            )
+            return lines
+
+        excluded = self.exclusions
+        total = len(self.certificates)
+        if not excluded:
+            lines.append(
+                f"All {total} certified operator(s) were admitted. The algebra "
+                "that ran is the algebra that was certified."
+            )
+            return lines
+
+        admitted = total - len(excluded)
+        lines.append(
+            f"**{len(excluded)} of {total} certified operator(s) were excluded, "
+            f"leaving {admitted} in force.** Decisions in this log were produced "
+            "by the reduced algebra, not the one the registry advertises."
+        )
+        lines.append("")
+        for item in excluded:
+            if item["cause"] == "untestable":
+                lines.append(
+                    f"- `{item['operator']}` was **never exercised**: the corpus "
+                    f"held no prohibited twin it could act on (0 trials, "
+                    f"{item['flips']} flips). This is a statement about corpus "
+                    "coverage, not about the operator. Nothing here is evidence "
+                    "that it is safe -- it was not asked. Add contrastive pairs "
+                    "this operator applies to."
+                )
+            else:
+                lines.append(
+                    f"- `{item['operator']}` **weakened the boundary** in "
+                    f"{item['flips']} of {item['trials']} trials and was excluded. "
+                    "The evidence is against this operator on this model."
+                )
         return lines
 
     def _escalation_section(self, query_chars: int) -> List[str]:

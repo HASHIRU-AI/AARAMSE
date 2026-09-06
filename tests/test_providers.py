@@ -18,6 +18,7 @@ from aaramse.providers import (
     LiteLLMClient,
     MissingCredential,
     OpenAIClient,
+    api_key_env_for,
     build_client,
     litellm_spec,
     parse_spec,
@@ -319,7 +320,186 @@ def test_ollama_models_disable_thinking():
     assert build_client("openai:gpt-5").extra == {}
 
 
+def test_nvidia_nim_models_disable_thinking():
+    """Nemotron returns its chain of thought as `content` unless told not to.
+
+    `nvidia/nemotron-3.5-lightning-30b-a3b` answered "Here's a thinking
+    process: 1. **Analyze User Request** ..." to every query, and truncated
+    before reaching an answer at all on a short budget, until this was set.
+    """
+    client = build_client("nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b")
+    assert client.extra["extra_body"]["chat_template_kwargs"] == {"thinking": False}
+
+
+def test_nvidia_nim_thinking_can_be_re_enabled_explicitly():
+    """The default is a default, not a policy."""
+    client = build_client(
+        "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b",
+        extra={"extra_body": {"chat_template_kwargs": {"thinking": True}}},
+    )
+    assert client.extra["extra_body"]["chat_template_kwargs"] == {"thinking": True}
+
+
+def test_meta_models_request_minimal_reasoning():
+    """Muse Spark reasons by default; the layer measures replies, not notes."""
+    client = build_client("meta/muse-spark-1.2")
+    assert client.extra["reasoning_effort"] == "minimal"
+
+
+def test_meta_reasoning_effort_can_be_overridden():
+    """A caller who wants the model to think can say so."""
+    client = build_client("meta/muse-spark-1.2", extra={"reasoning_effort": "high"})
+    assert client.extra["reasoning_effort"] == "high"
+
+
+def test_meta_models_get_reasoning_headroom():
+    """An 8-token judge budget is entirely consumed by reasoning without it."""
+    client = build_client("meta/muse-spark-1.2")
+    assert client.reasoning_headroom == 1024
+
+
+def test_reasoning_headroom_widens_the_token_budget():
+    """The headroom is added to whatever the caller asked for."""
+    sent = {}
+
+    class Recording(LiteLLMClient):
+        def _completion(self, **kwargs):
+            sent.update(kwargs)
+            raise ModelUnavailable("stop here")
+
+    client = Recording(model="meta/muse-spark-1.2", reasoning_headroom=1024)
+    with pytest.raises(ModelUnavailable):
+        client.complete("hello", 0.0, 8)
+    assert sent["max_tokens"] == 8 + 1024
+
+
+def test_models_that_do_not_reason_get_no_headroom():
+    """The cap the judges rely on is not loosened without a reason."""
+    assert build_client("openai:gpt-5").reasoning_headroom == 0
+    assert build_client("gemma4:12b").reasoning_headroom == 0
+
+
+def test_non_nim_litellm_routes_are_left_alone():
+    """Only the providers with a known failure get a reasoning override."""
+    client = build_client("openai:gpt-5")
+    assert "extra_body" not in client.extra
+    assert "think" not in client.extra
+
+
 def test_thinking_can_be_re_enabled_explicitly():
     """A default, not a lock: a caller who wants reasoning traces can have them."""
     client = build_client("qwen3.5:4b", extra={"think": True})
     assert client.extra["think"] is True
+
+
+class _RateLimited(Exception):
+    """Stands in for litellm.RateLimitError, which tests never import."""
+
+    def __init__(self, status_code: int = 429) -> None:
+        super().__init__("429 Too Many Requests")
+        self.status_code = status_code
+
+
+def _flaky(failures: int, slept: list):
+    """Build a client that rate-limits `failures` times, then answers."""
+
+    class Flaky(LiteLLMClient):
+        attempts: int = 0
+
+        def _completion(self, **kwargs: Any) -> Any:
+            type(self).attempts += 1
+            if type(self).attempts <= failures:
+                raise _RateLimited()
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="reply"))]
+            )
+
+    Flaky.attempts = 0
+    return Flaky(model="nvidia_nim/x", sleep=slept.append)
+
+
+def test_rate_limited_calls_are_retried():
+    """A repair is a ~25-call burst; NIM 429s partway through one.
+
+    Without this the first interesting query in the console dies mid-repair,
+    which is the only query a reader cares about.
+    """
+    slept: list = []
+    assert _flaky(2, slept).complete("q") == "reply"
+    assert len(slept) == 2, "expected one wait per rate-limited attempt"
+
+
+def test_backoff_between_retries_grows():
+    """Retrying a throttled endpoint at a fixed interval is just more traffic."""
+    slept: list = []
+    _flaky(2, slept).complete("q")
+    assert slept[1] > slept[0]
+
+
+def test_retries_are_bounded():
+    """A restricted key never recovers; retrying it forever hangs the console."""
+    slept: list = []
+
+    class Always(LiteLLMClient):
+        def _completion(self, **kwargs: Any) -> Any:
+            raise _RateLimited()
+
+    with pytest.raises(ModelUnavailable):
+        Always(model="nvidia_nim/x", sleep=slept.append).complete("q")
+    assert slept, "expected at least one retry before giving up"
+
+
+def test_non_rate_limit_errors_are_not_retried():
+    """A 400 is a bug in the request; waiting and resending cannot fix it."""
+    slept: list = []
+
+    class Broken(LiteLLMClient):
+        def _completion(self, **kwargs: Any) -> Any:
+            raise ValueError("bad request")
+
+    with pytest.raises(ModelUnavailable):
+        Broken(model="nvidia_nim/x", sleep=slept.append).complete("q")
+    assert slept == [], "a non-retryable error must fail immediately"
+
+
+def test_meta_sends_temperature_so_runs_reproduce():
+    """A demo a judge cannot reproduce is an anecdote.
+
+    Muse Spark's API is OpenAI-compatible and accepts temperature, unlike the
+    recent OpenAI and Anthropic models this defaults off for.
+    """
+    client = build_client("meta/muse-spark-1.2")
+    assert client.send_temperature is True
+
+
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        ("meta/muse-spark-1.2", "META_API_KEY"),
+        ("nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b", "NVIDIA_NIM_API_KEY"),
+        ("openai:gpt-5", "OPENAI_API_KEY"),
+        ("anthropic:claude-opus-5", "ANTHROPIC_API_KEY"),
+        ("gemma4:12b", None),
+    ],
+)
+def test_api_key_env_is_derived_from_the_spec(spec, expected):
+    """The console takes a key from a form and has to know where to put it."""
+    assert api_key_env_for(spec) == expected
+
+
+def test_nvidia_nim_sends_temperature_so_runs_reproduce():
+    """Without it the provider picks its own default and every run differs.
+
+    The same benign prompt was scored full_refusal by a screening pass and
+    partial_refusal by the console minutes later, which makes a demo a coin
+    flip and an evaluation unrepeatable. NIM is OpenAI-compatible and accepts
+    temperature.
+    """
+    client = build_client("nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b")
+    assert client.send_temperature is True
+
+
+def test_providers_that_reject_temperature_still_omit_it():
+    """The reason the default is off has not gone away."""
+    assert build_client("openai:gpt-5").send_temperature is False
+    assert build_client("anthropic:claude-opus-5").send_temperature is False

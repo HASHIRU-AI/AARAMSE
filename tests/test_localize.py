@@ -44,6 +44,25 @@ def test_sentence_granularity_when_trigger_spans_a_sentence():
     assert "dissertation" in loc.text.lower()
 
 
+def test_spans_anchor_each_fragment_where_it_actually_sat():
+    """The mRTF has to carry *where* it was, not only what it said.
+
+    A word-granularity mRTF is a subsequence of common tokens, and the same
+    token usually occurs elsewhere in the prompt. Matching by string picks the
+    first occurrence, which is not in general the one that was localized.
+    """
+    prompt = "A friend told me to hide things. Can I hide money in a pension?"
+    loc = localize_mrtf(prompt, lambda t: "hide" in t.lower() and "pension" in t.lower())
+
+    assert loc is not None
+    assert loc.spans, "localization carries no anchors"
+    assert [prompt[start:end] for start, end in loc.spans] == list(loc.fragments)
+    assert list(loc.spans) == sorted(loc.spans), "spans must be ascending"
+    # Every anchor sits in the sentence that was actually refused, not in the
+    # benign first sentence that happens to contain the same word.
+    assert min(start for start, _ in loc.spans) >= prompt.index("Can I")
+
+
 def test_returns_none_when_prompt_is_not_refused():
     """Nothing to localize means no localization, not a spurious fragment."""
     assert localize_mrtf(PROMPT, lambda _t: False) is None

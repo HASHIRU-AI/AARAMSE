@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from aaramse.falsereject import load_benign, load_toxic
-from aaramse.judge import JUDGE_PROMPT, ResponseClass, ThreeWayJudge
+from aaramse.judge import (
+    JUDGE_EXAMPLES,
+    JUDGE_PROMPT,
+    ResponseClass,
+    ThreeWayJudge,
+)
 
 
 @pytest.mark.parametrize(
@@ -73,3 +78,82 @@ def test_corpus_limit_is_respected():
     """Sampling must be deterministic and bounded."""
     assert len(load_benign(limit=7)) == 7
     assert load_benign(limit=7) == load_benign(limit=7)
+
+
+def test_examples_include_a_refusal_that_only_redirects():
+    """The rubric's own 'alternative suggestions' clause needs a worked case.
+
+    A live model called a decline-then-refer-to-the-ombudsman reply
+    3_partial_refusal, which the gateway reads as "answered" and leaves alone.
+    """
+    redirects = [
+        example for example in JUDGE_EXAMPLES
+        if example.label is ResponseClass.FULL_REFUSAL
+    ]
+    assert redirects, "no worked example of a refusal that only offers alternatives"
+
+
+def test_examples_include_a_contrasting_partial_refusal():
+    """Examples that only ever say 'full refusal' would teach the judge to over-call it.
+
+    Over-calling refusal costs false interventions on queries the model answered,
+    which is the failure the FinQA control measures.
+    """
+    partials = [
+        example for example in JUDGE_EXAMPLES
+        if example.label is ResponseClass.PARTIAL_REFUSAL
+    ]
+    assert partials, "no contrasting example of a genuine partial refusal"
+
+
+@pytest.mark.parametrize("example", JUDGE_EXAMPLES, ids=lambda e: e.label.value)
+def test_prompt_carries_every_example(example):
+    """An example the prompt does not render cannot teach the judge anything."""
+    assert example.response in JUDGE_PROMPT
+    assert example.label.value in JUDGE_PROMPT
+
+
+def test_prompt_still_formats_with_a_question_and_response():
+    """Adding examples must not break the template the judge is rendered from."""
+    rendered = JUDGE_PROMPT.format(question="WHO OWNS THIS", response="A REPLY")
+    assert "WHO OWNS THIS" in rendered
+    assert "A REPLY" in rendered
+    assert rendered.endswith(":")
+
+
+def test_a_garbled_generation_is_retried_not_believed():
+    """A degenerate sample is a transient failure, not a judgement.
+
+    nemotron returned '2ells integrated early deep everyiciousells many...' for
+    one of three identical judge calls. That parsed to nothing, fell back to
+    partial refusal, and JudgedProbe reads anything but FULL_REFUSAL as "the
+    user got an answer" -- so the layer stood down on a refusal.
+    """
+    replies = iter(["2ells integrated early deep everyiciousells many", "2_full_refusal"])
+    judge = ThreeWayJudge(generate=lambda _: next(replies))
+    assert judge.classify("q", "r").label is ResponseClass.FULL_REFUSAL
+
+
+def test_retries_are_bounded_and_still_fall_back():
+    """A model that only ever garbles must not spin."""
+    calls = []
+
+    def garble(_prompt: str) -> str:
+        calls.append(1)
+        return "no label here"
+
+    judge = ThreeWayJudge(generate=garble)
+    assert judge.classify("q", "r").label is ResponseClass.PARTIAL_REFUSAL
+    assert 1 < len(calls) <= 3, f"expected a bounded retry, got {len(calls)} calls"
+
+
+def test_a_parseable_verdict_is_never_re_asked():
+    """Re-asking a judge that answered would change what every number means."""
+    calls = []
+
+    def once(_prompt: str) -> str:
+        calls.append(1)
+        return "3_partial_refusal"
+
+    ThreeWayJudge(generate=once).classify("q", "r")
+    assert len(calls) == 1

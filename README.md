@@ -59,6 +59,32 @@ Byte-identity is the guarantee, and it never broke: every prompt came back
 identical, escalations included. A false intervention costs latency and a
 supervisor's attention, not the user's words.
 
+> **These figures predate the judge's worked examples.** The refusal oracle *is*
+> the three-way judge, so strengthening its prompt moves what counts as an
+> over-refusal, and therefore moves both rows above. The change was made because
+> a live model classified a decline-then-refer-elsewhere reply as a partial
+> refusal, which the gateway reads as "answered" and leaves untouched -- the
+> layer stood down on a query it exists to repair. `examples/finqa_control.py`
+> has not been re-run against the new instrument. Treat this table as the last
+> measurement of the old one until it has been.
+>
+> Two later changes move them further: `--verify-answers` is now on for the
+> deployment path, which turns some repairs into escalations, and the harm gate
+> now covers concealment from a creditor or trustee, which stops repair being
+> attempted on those at all. Both were made to fix wrong outcomes rather than
+> to move a number, and neither has been re-measured.
+>
+> The console ships with the rewriter split on: nemotron answers and judges,
+> muse-spark-1.2 proposes fragment replacements and scores meaning. The judge
+> stays on the model being repaired, because what counts as a refusal has to be
+> a property of that model. The cost is known and accepted -- muse-spark
+> declines the fragment instruction as a request to help evade a safety filter,
+> so the confined operator usually falls back to a static generalization or
+> proposes nothing, and repairs arrive as a deployer frame. What the split buys
+> is that the model being repaired is not also the model scoring whether the
+> repair preserved the question. `--rewriter-model ""` collapses it onto one
+> model, which is how every measurement above was taken.
+
 Two thirds of the first measured rate was our own fault. The corpus builder
 shipped each item's table and dropped the filing's narrative, leaving 47 of 120
 questions unanswerable as shipped; under a compliance prompt an unanswerable

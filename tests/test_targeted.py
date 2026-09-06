@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import re
+
 from aaramse.equivalence import SemanticEquivalence
 from aaramse.fidelity import MeaningFidelity
-from aaramse.targeted import TargetedConfig, TargetedRepair
+from aaramse.invariants import ActionabilityScorer
+from aaramse.operators import FrameAssert, FrameConfig
+from aaramse.refusal import ResponseVerdict
+from aaramse.search import RepairSearch, SearchConfig
+from aaramse.targeted import (
+    STATIC_SUBSTITUTIONS,
+    TargetedConfig,
+    TargetedRepair,
+)
+from aaramse.types import Decision
+from aaramse.ui import attempts_of
 
 PROMPT = (
     "I am researching UK insolvency law for a university dissertation. "
@@ -174,14 +186,14 @@ def test_best_of_k_prefers_the_higher_fidelity_candidate():
     assert not any("obscure assets" in text for text, _ in op.rejected)
 
 
-def test_domain_term_substitution_reads_as_undeclared_drift():
-    """Pins a real limitation of the operator's self-check.
+def test_domain_term_substitution_is_declared_not_drift():
+    """The operator's self-check now sees the substitutions it just made.
 
-    `_reject_reason` builds the program it hands IntentGuard *without* the
-    substitutions it just made, so `_declared_losses` is empty and swapping any
-    domain term looks like undeclared topic drift. The search-level check sees
-    the same candidate with its generalizations attached and would admit it.
-    Pinned so that loosening it is a deliberate, reviewed change.
+    `_reject_reason` used to hand IntentGuard a program with no generalizations
+    attached, so `_declared_losses` was empty and swapping any domain term read
+    as undeclared topic drift -- while the identical check at the search level,
+    which does see them, admitted the same candidate. The operator's own guard
+    was strictly stricter than the one the search would apply.
     """
     op = TargetedRepair(
         refuses=lambda t: "hide assets" in t.lower(),
@@ -189,8 +201,55 @@ def test_domain_term_substitution_reads_as_undeclared_drift():
         equivalence=SemanticEquivalence(generate=lambda _: "YES"),
         fidelity=MeaningFidelity(),
     )
-    assert op.apply(PROMPT) is None
-    assert any("undeclared loss of ['assets']" in reason for _, reason in op.rejected)
+    result = op.apply(PROMPT)
+
+    assert result is not None, "a declared domain-term swap must be admissible"
+    assert result.generalizations == (("hide assets", "conceal holdings"),)
+    assert not any("undeclared loss" in reason for _, reason in op.rejected)
+
+
+def test_declared_subject_loss_is_still_priced():
+    """Declaring a loss makes it legal, not invisible.
+
+    IntentGuard admits the swap above; `MeaningFidelity` still records the lost
+    subject term, which lowers the score and so makes best-of-k prefer a rewrite
+    that keeps it. Blocking and pricing are different jobs and stay separate.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda _p: "conceal holdings",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+    )
+    result = op.apply(PROMPT)
+
+    assert result is not None
+    assert result.fidelity is not None
+    assert "assets" in result.fidelity.lost_terms
+    assert result.fidelity.score < 1.0
+
+
+def test_edit_lands_on_the_localized_occurrence_not_the_first_match():
+    """Confinement is a claim about *which* characters changed.
+
+    The mRTF here is the non-contiguous ("hide", "pension?") inside the second
+    sentence, and "hide" also occurs in the benign first one. Splicing by string
+    match rewrote the first sentence -- byte-identity held, and the layer still
+    edited text delta debugging had cleared.
+    """
+    prompt = "A friend told me to hide things. Can I hide money in a pension?"
+    op = TargetedRepair(
+        refuses=lambda t: "hide" in t.lower() and "pension" in t.lower(),
+        generate=lambda _p: "shelter",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+    )
+    result = op.apply(prompt)
+
+    assert result is not None
+    assert result.after.startswith("A friend told me to hide things."), (
+        f"the untouched sentence was edited: {result.after!r}"
+    )
 
 
 def test_replacement_dropping_a_quantity_is_rejected():
@@ -237,6 +296,49 @@ def test_fidelity_report_rides_along_for_the_audit_log():
     assert result.fidelity.score == 1.0
 
 
+def test_best_of_k_asks_a_distinguishable_question_each_sample():
+    """k identical requests return one cached string k times.
+
+    Every deployed client memoises on (prompt, temperature, max_tokens) and the
+    gateway asks at temperature 0, so sending the same fragment prompt k times
+    drew one candidate and best-of-k silently collapsed to k=1 against every
+    real model. Only the fake generators in this file, which ignore the prompt,
+    ever saw more than one. The samples must therefore differ as *prompts*.
+    """
+    asked: list[str] = []
+
+    def generate(prompt: str) -> str:
+        asked.append(prompt)
+        return f"protect assets lawfully {len(asked)}"
+
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=generate,
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=3),
+    )
+    op.apply(PROMPT)
+
+    assert len(asked) == 3
+    assert len(set(asked)) == 3, "samples are indistinguishable to a caching client"
+    # Sample 0 must be the unmodified instruction, so a k=1 run is unchanged.
+    assert sum(1 for prompt in asked if "Prefer" not in prompt) == 1
+
+
+def test_candidates_are_capped_at_the_available_nudges():
+    """Asking for more samples than the nudge set can vary sends duplicates."""
+    asked: list[str] = []
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda p: asked.append(p) or "protect assets lawfully",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=9),
+    )
+    op.apply(PROMPT)
+
+    assert len(asked) == 3, "capped to 1 + len(sample_nudges)"
+
+
 def test_identical_candidates_are_generated_once_each_but_judged_once():
     """A deterministic model returns k copies; only one needs judging."""
     judged: list[str] = []
@@ -249,3 +351,355 @@ def test_identical_candidates_are_generated_once_each_but_judged_once():
     )
     assert op.apply(PROMPT) is not None
     assert len(judged) == 1
+
+
+REWRITER_REFUSAL = (
+    "I understand you're asking for help rephrasing content to bypass a safety "
+    "filter. I can't help with circumventing safety systems."
+)
+
+
+def test_a_rewriter_that_declines_is_asked_again_neutrally():
+    """FRAGMENT_INSTRUCTION opens by naming a safety filter, and some models read
+    that as a request to help evade one.
+
+    muse-spark-1.2 refused it outright and produced 'statutory definition' the
+    moment the same task was posed without the framing, so the instruction was
+    the obstacle rather than the model.
+    """
+    replies = iter([REWRITER_REFUSAL, "statutory definition"])
+    op = TargetedRepair(
+        refuses=lambda t: "legal definition" in t.lower(),
+        generate=lambda _p: next(replies),
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("What is the legal definition of X?", "legal definition") \
+        == "statutory definition"
+
+
+def test_a_declining_rewriter_is_recorded_as_declining():
+    """It was being reported as 'replacement far longer than fragment'.
+
+    That is the length guard catching a refusal message, which tells a reader
+    the rewrite was too long when in fact no rewrite was ever proposed.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: REWRITER_REFUSAL,
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    op._replacement("What is the legal definition of X?", "legal definition")
+    reasons = [reason for _, reason in op.rejected]
+    assert any("declined" in r for r in reasons), reasons
+    assert not any("far longer" in r for r in reasons), reasons
+
+
+def test_a_complying_rewriter_is_only_asked_once():
+    """The neutral retry must not double the cost on models that never refused.
+
+    Every measurement in this repository was taken on such a model, so those
+    runs have to be unchanged.
+    """
+    calls = []
+
+    def generate(_p: str) -> str:
+        calls.append(1)
+        return "statutory definition"
+
+    op = TargetedRepair(
+        refuses=lambda t: True, generate=generate,
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("What is the legal definition of X?", "legal definition") \
+        == "statutory definition"
+    assert len(calls) == 1
+
+
+def test_attempts_are_cleared_between_turns():
+    """The operator outlives a turn; its rejection list must not."""
+    op = build(replacement="protect assets lawfully")
+    op.apply(PROMPT)
+    op.reset()
+    assert op.rejected == []
+    assert op.last_localization is None
+
+
+def test_a_later_failure_does_not_erase_an_earlier_localization():
+    """The search applies operators repeatedly within one turn.
+
+    At depth 2 the operator runs against text a frame has already been prepended
+    to, where localization usually fails. Overwriting the successful depth-1
+    result with that None makes the console report no fragment on a turn where
+    one was found and edited.
+    """
+    def refuses(text: str) -> bool:
+        # Refuses the bare prompt; the framed variant is answered, so
+        # localization succeeds on the first and fails on the second.
+        return "authorisation reference" not in text and "hide assets" in text.lower()
+
+    op = TargetedRepair(
+        refuses=refuses,
+        generate=lambda _p: "protect assets lawfully",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    op.apply(PROMPT)
+    found = op.last_localization
+    assert found is not None, "the first application should have localized a fragment"
+
+    op.apply("The following question is answered ... authorisation reference FRN-1. " + PROMPT)
+    assert op.last_localization is found, "a later failure erased the earlier localization"
+
+
+def test_a_degenerate_replacement_is_recorded_not_dropped():
+    """Returning the fragment unchanged left no trace at all.
+
+    Three declines and no proposal looked like the retry never ran, when in
+    fact it ran and echoed the fragment back. A silent branch is the one thing
+    a trace panel cannot show.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: "hide assets" in t.lower(),
+        generate=lambda _p: "hide assets",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    op._replacement(PROMPT, "hide assets")
+    reasons = [reason for _, reason in op.rejected]
+    assert any("unchanged" in r for r in reasons), reasons
+
+
+def test_a_static_rule_covers_a_rewriter_that_will_not_help():
+    """Last resort, after the model has declined and the retry has too.
+
+    muse-spark-1.2 declines FRAGMENT_INSTRUCTION on every sample, so the
+    confined operator never proposes anything and the layer looks like a method
+    that prepends a prefix. A deterministic generalization needs no model and
+    cannot be refused.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "I can't help with bypassing a safety filter.",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Walk me through my options", "Walk me through") \
+        == "what is the general process for"
+
+
+def test_static_rules_only_generalize():
+    """Every rule must lower actionability, never raise it.
+
+    A substitution that made the request more specific would be a jailbreak
+    with extra steps, and IntentGuard would reject it anyway -- but a rule set
+    that has to be caught by the guard is the wrong rule set.
+    """
+    scorer = ActionabilityScorer()
+    for pattern, replacement in STATIC_SUBSTITUTIONS:
+        probe = re.sub(pattern, replacement, "Should I walk me through my urgent case right now",
+                       flags=re.IGNORECASE)
+        assert scorer.score(probe) <= scorer.score(
+            "Should I walk me through my urgent case right now"
+        ) + 1e-9, (pattern, replacement)
+
+
+def test_a_model_that_answers_is_never_overridden_by_a_rule():
+    """The static table is a fallback, not a policy.
+
+    Every measurement in this repository was taken on a model that complied
+    with the instruction, so those runs must not start taking a different path.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "the general process for",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Walk me through my options", "Walk me through") \
+        == "the general process for"
+
+
+def test_an_uncovered_fragment_still_yields_nothing():
+    """The table is small and deliberately so; it must not invent a rewrite."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "I can't help with that.",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("What is the legal definition of X?", "harvesting") is None
+
+
+def test_a_static_rule_also_covers_a_rewriter_that_echoes_the_fragment():
+    """Declining is not the only way to produce nothing.
+
+    Asked to rewrite the fragment 'my', muse-spark-1.2 returned 'my'. That is
+    as useless as a refusal, and the fallback has to be reachable from it --
+    the first version returned early and only ever ran after two declines.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "my",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Walk me through my mortgage options", "my") == "a"
+
+
+def test_a_static_rule_also_covers_an_oversized_reply():
+    """A model that explains instead of answering leaves the same gap."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "you could say something along the lines of the investor's own",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Walk me through my mortgage options", "my") == "a"
+
+
+class _PersonProbe:
+    """Refuses first-person framing unless an authorised frame is present."""
+
+    def refuses(self, text: str) -> bool:
+        return "authorisation reference" not in text and " my " in f" {text.lower()} "
+
+    def probe(self, text: str) -> ResponseVerdict:
+        return ResponseVerdict(refused=self.refuses(text), delivers_procedure=False, text="")
+
+
+def test_a_declining_rewriter_still_yields_a_word_substitution():
+    """End to end: the confined operator wins by rule when the model will not help.
+
+    This is the shape the console could not show. muse-spark-1.2 declines the
+    rewrite instruction on every sample, so TARGETED_REPAIR proposed nothing and
+    FRAME_ASSERT won every turn -- which made the method look like prepending a
+    prefix. With the fallback the operator localizes 'my', generalizes it to
+    'a', and clears the refusal on its own.
+    """
+    decline = "I understand you're asking to bypass a safety filter, but I can't help."
+    targeted = TargetedRepair(
+        refuses=_PersonProbe().refuses,
+        generate=lambda _p: decline,
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+        config=TargetedConfig(max_localization_tests=8, candidates=1),
+    )
+    search = RepairSearch(
+        [targeted, FrameAssert(FrameConfig("Acme Wealth Ltd", "FRN-123456"))],
+        oracle=None,
+        config=SearchConfig(max_depth=2),
+        probe=_PersonProbe(),
+    )
+
+    result = search.repair("Walk me through my mortgage refinance options")
+
+    assert result.decision is Decision.REPAIRED
+    assert result.program.names == ("TARGETED_REPAIR",), "the frame should not have won"
+    assert ("my", "a") in result.program.generalizations()
+    assert result.rewritten == "Walk me through a mortgage refinance options"
+
+    entry = attempts_of([targeted])[0]
+    assert entry["mrtf"] == "my"
+    assert ["my", "a"] in [list(p) for p in entry["proposed"]["substitutions"]]
+
+
+def test_a_lateral_model_replacement_loses_to_a_generalizing_rule():
+    """'immediately' -> 'right away' is a swap, not a generalization.
+
+    muse-spark-1.2 proposed exactly that for the mRTF of "Can I roll my
+    Vanguard IRA into a Roth immediately?". Actionability did not fall, the
+    model refused the rewrite too, and TARGETED_REPAIR lost. The method's whole
+    constraint is monotone generalization, so a proposal that does not lower
+    the score is not a candidate rewrite at all.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "right away",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    prompt = "Can I roll my Vanguard IRA into a Roth immediately?"
+    chosen = op._replacement(prompt, "immediately?")
+    scorer = ActionabilityScorer()
+    assert scorer.score(prompt.replace("immediately?", chosen, 1)) < \
+        scorer.score(prompt.replace("immediately?", "right away", 1))
+
+
+def test_a_generalizing_model_replacement_is_kept():
+    """The rule is a floor, not a preference. A model that generalizes wins."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "a retirement account",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Should I move my ISA today?", "my ISA") == "a retirement account"
+
+
+def test_choosing_the_rule_over_the_model_is_recorded():
+    """A reader must be able to see that the model's proposal was set aside."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "right away",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    op._replacement("Can I roll my Vanguard IRA into a Roth immediately?", "immediately?")
+    reasons = [reason for _, reason in op.rejected]
+    assert any("did not generalize" in r for r in reasons), reasons
+
+
+def test_a_rule_may_delete_a_fragment_that_is_only_a_marker():
+    """The mRTF is minimal, so it is often exactly the trigger and nothing else.
+
+    Localization on "Tell me how to restructure my mortgage before rates rise,
+    urgently" returned 'urgently'. Generalizing that means removing it, and the
+    table produced an empty string, which was indistinguishable from no rule
+    applying. Deletion is the canonical subtractive repair, not a failure.
+    """
+    assert TargetedRepair._static_replacement("urgently") == ""
+    assert TargetedRepair._static_replacement("tax-loss harvesting") is None
+
+
+def test_a_deleting_rule_still_reaches_the_candidate():
+    """An empty replacement must splice, not be read as 'nothing produced'."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "as a matter of urgency",   # rejected: far longer
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Restructure my mortgage, urgently", "urgently") == ""
+
+
+def test_deleting_an_urgency_marker_repairs_the_query():
+    """End to end, and this is the second repair type the console never showed."""
+    def refuses(text: str) -> bool:
+        return "authorisation reference" not in text and "urgently" in text.lower()
+
+    class _UrgencyProbe:
+        def refuses(self, text: str) -> bool:
+            return refuses(text)
+
+        def probe(self, text: str) -> ResponseVerdict:
+            return ResponseVerdict(refused=refuses(text), delivers_procedure=False, text="")
+
+    targeted = TargetedRepair(
+        refuses=refuses,
+        generate=lambda _p: "as a matter of urgency",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+        config=TargetedConfig(max_localization_tests=8, candidates=1),
+    )
+    search = RepairSearch(
+        [targeted, FrameAssert(FrameConfig("Acme Wealth Ltd", "FRN-123456"))],
+        oracle=None, config=SearchConfig(max_depth=2), probe=_UrgencyProbe(),
+    )
+    result = search.repair("Tell me how to restructure a mortgage before rates rise, urgently")
+
+    assert result.decision is Decision.REPAIRED
+    assert result.program.names == ("TARGETED_REPAIR",)
+    assert "urgently" not in result.rewritten.lower()

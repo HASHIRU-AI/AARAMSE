@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .client import (
     CachingClient,
@@ -35,6 +36,7 @@ from .client import (
 
 __all__ = [
     "ANTHROPIC_VERSION",
+    "api_key_env_for",
     "DEFAULT_BACKEND",
     "AnthropicClient",
     "LiteLLMClient",
@@ -48,6 +50,9 @@ __all__ = [
 # Which client `build_client` returns when the caller does not say. LiteLLM by
 # default: provider control is worth one dependency.
 DEFAULT_BACKEND = "litellm"
+
+# Providers that need no credential: a local server is reached by URL alone.
+_KEYLESS_PROVIDERS = frozenset({"ollama", "ollama_chat", "llamafile"})
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +221,20 @@ class AnthropicClient(CachingClient):
         return self.cached(key, lambda: self._message(prompt, None, max_tokens))
 
 
+def _is_rate_limit(error: Exception) -> bool:
+    """Return True when a provider exception is a throttle worth waiting out.
+
+    Matched structurally rather than by importing litellm's exception types,
+    because this module is importable without litellm installed and the native
+    clients below must keep working in that case.
+    """
+    if type(error).__name__ == "RateLimitError":
+        return True
+    if getattr(error, "status_code", None) == 429:
+        return True
+    return "429" in str(error) and "rate" in str(error).lower()
+
+
 @dataclass
 class LiteLLMClient(CachingClient):
     """The default client: every model call in the package goes through LiteLLM.
@@ -245,6 +264,26 @@ class LiteLLMClient(CachingClient):
             for 0 nearly everywhere, so sending it turns every call into a 400.
         extra: Additional keyword arguments forwarded to `litellm.completion`
             verbatim, for provider-specific parameters this class does not model.
+        max_attempts: How many times one request may be sent before giving up.
+            Only rate limits are retried: a 400 is a bug in the request and
+            resending it is just more traffic against the same endpoint. Six
+            rather than four because four carried a NIM repair from its old
+            failure point of 5 calls to 23 of ~25 and then ran out; the waits
+            are 2/4/8/16/32s, so the last two are what a sustained throttle
+            actually needs.
+        backoff_base: Seconds before the first retry, doubling thereafter. A
+            repair is a 23-26 call burst and free tiers throttle inside a single
+            one, so the console's first interesting query dies mid-repair
+            without this -- passthrough turns are two calls and never hit it.
+        sleep: How to wait between attempts. Injected in tests, which must not
+            actually sleep.
+        reasoning_headroom: Extra `max_tokens` granted on every call, for models
+            that cannot be stopped from reasoning. `max_tokens` caps reasoning
+            *and* content together, and this package asks for budgets as small
+            as 8 tokens when judging, so on such a model the budget is spent
+            deliberating and `content` comes back empty -- which it cannot tell
+            apart from a model that answered with nothing. Left at 0 for models
+            that do not reason, since it loosens the cap the judges rely on.
     """
 
     model: str
@@ -253,6 +292,10 @@ class LiteLLMClient(CachingClient):
     timeout: int = 300
     send_temperature: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
+    reasoning_headroom: int = 0
+    max_attempts: int = 6
+    backoff_base: float = 2.0
+    sleep: Callable[[float], None] = time.sleep
     calls: int = 0
     _cache: Dict[Tuple[str, ...], str] = field(default_factory=dict, repr=False)
 
@@ -280,11 +323,10 @@ class LiteLLMClient(CachingClient):
         one failure a deployer can act on and the sidecar turns it into a 503
         rather than a stack trace.
         """
-        self.calls += 1
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens + self.reasoning_headroom,
             "timeout": self.timeout,
             **self.extra,
         }
@@ -292,12 +334,29 @@ class LiteLLMClient(CachingClient):
             payload["api_base"] = self.api_base
         if self.send_temperature:
             payload["temperature"] = temperature
-        try:
-            response = self._completion(**payload)
-        except ModelUnavailable:
-            raise
-        except Exception as error:
-            raise ModelUnavailable(f"{self.model} call failed: {error}") from error
+
+        # Every attempt is counted, because every attempt is a request the
+        # provider saw. Reporting one call for three attempts would understate
+        # the cost of exactly the turns that are most expensive.
+        for attempt in range(self.max_attempts):
+            self.calls += 1
+            try:
+                response = self._completion(**payload)
+                break
+            except ModelUnavailable:
+                raise
+            except Exception as error:
+                last = attempt + 1 >= self.max_attempts
+                if last or not _is_rate_limit(error):
+                    raise ModelUnavailable(
+                        f"{self.model} call failed: {error}"
+                    ) from error
+                delay = self.backoff_base * (2 ** attempt)
+                logger.warning(
+                    "%s rate limited (attempt %d/%d); waiting %.1fs",
+                    self.model, attempt + 1, self.max_attempts, delay,
+                )
+                self.sleep(delay)
 
         choices = getattr(response, "choices", None) or []
         if not choices:
@@ -394,6 +453,25 @@ def litellm_spec(spec: str) -> str:
     return f"{provider}/{model}"
 
 
+def api_key_env_for(spec: str) -> Optional[str]:
+    """Return the environment variable a provider reads its credential from.
+
+    The console accepts a model and a key from a form and has to know where to
+    put the key. LiteLLM's convention is the provider name upper-cased with
+    `_API_KEY`, which covers every hosted provider this package names.
+
+    Args:
+        spec: A model spec in any form `litellm_spec` accepts.
+
+    Returns:
+        The variable name, or None for a provider that needs no credential.
+    """
+    provider = litellm_spec(spec).split("/", 1)[0].strip()
+    if not provider or provider in _KEYLESS_PROVIDERS:
+        return None
+    return f"{provider.upper()}_API_KEY"
+
+
 def _resolve_backend(backend: Optional[str]) -> str:
     """Pick the client backend from the argument, the environment, or the default."""
     chosen = (backend or os.environ.get("AARAMSE_CLIENT_BACKEND") or DEFAULT_BACKEND).strip()
@@ -444,6 +522,48 @@ def build_client(
             extra = dict(kwargs.get("extra") or {})
             extra.setdefault("think", False)
             kwargs["extra"] = extra
+        elif model.startswith("nvidia_nim/"):
+            # Same failure as Ollama's, different switch. Nemotron reasoning
+            # models emit their chain of thought *as* `content` -- duplicated
+            # into `reasoning_content` -- so a short budget buys deliberation
+            # and no answer, and a long one buys an answer wrapped in "Here's a
+            # thinking process:". Either way the refusal detector and the
+            # equivalence judge are reading the model's notes rather than its
+            # reply. NIM takes the switch as a chat-template flag.
+            extra = dict(kwargs.get("extra") or {})
+            body = dict(extra.get("extra_body") or {})
+            body.setdefault("chat_template_kwargs", {"thinking": False})
+            extra["extra_body"] = body
+            kwargs["extra"] = extra
+            # NIM is OpenAI-compatible and accepts temperature, unlike the
+            # recent OpenAI and Anthropic models this defaults off for. Without
+            # it the provider picks its own default: the same benign prompt was
+            # scored full_refusal by one pass and partial_refusal minutes later,
+            # which makes a console demo a coin flip and an evaluation
+            # unrepeatable.
+            kwargs.setdefault("send_temperature", True)
+        elif model.startswith("meta/"):
+            # Muse Spark is a reasoning model too, but the Meta Model API is
+            # OpenAI-compatible and takes the standard `reasoning_effort`, so
+            # there is no vendor-specific body to build. "minimal" rather than
+            # "none": model_cost advertises supports_minimal_reasoning_effort
+            # for muse-spark-1.2 and says nothing about "none", and a rejected
+            # parameter is a 400 on every call rather than a quiet fallback.
+            extra = dict(kwargs.get("extra") or {})
+            extra.setdefault("reasoning_effort", "minimal")
+            kwargs["extra"] = extra
+            # The Meta API accepts temperature, unlike the recent OpenAI and
+            # Anthropic models this defaults off for. This package asks for 0
+            # nearly everywhere, so sending it is what makes a console run
+            # reproducible rather than merely repeatable-ish.
+            kwargs.setdefault("send_temperature", True)
+            # Muse Spark cannot be told to stop reasoning -- the API rejects
+            # reasoning_effort="none" outright -- and at "minimal" it still
+            # spent 70-237 tokens deliberating before answering a judge-shaped
+            # prompt. Against a 24-token judge budget that is the whole budget,
+            # so every instrument in the package returned "". Measured worst
+            # case was 237; 1024 leaves room for the long adversarial prompts.
+            kwargs.setdefault("reasoning_headroom", 1024)
         return LiteLLMClient(model=model, system_prompt=system_prompt, **kwargs)
 
     provider, model = parse_spec(spec)

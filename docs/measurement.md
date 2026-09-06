@@ -54,6 +54,32 @@ compliance system prompt, one run per cell; artifacts in `audit/finqa_*.json`.
 | table only (pre-fix) | 7/120 — 5.83% | 4/120 — 3.33% |
 | **context-complete** | **1/120 — 0.83%** | **1/120 — 0.83%** |
 
+> **These figures predate the judge's worked examples.** The refusal oracle *is*
+> the three-way judge, so strengthening its prompt moves what counts as an
+> over-refusal, and therefore moves both rows above. The change was made because
+> a live model classified a decline-then-refer-elsewhere reply as a partial
+> refusal, which the gateway reads as "answered" and leaves untouched -- the
+> layer stood down on a query it exists to repair. `examples/finqa_control.py`
+> has not been re-run against the new instrument. Treat this table as the last
+> measurement of the old one until it has been.
+>
+> Two later changes move them further: `--verify-answers` is now on for the
+> deployment path, which turns some repairs into escalations, and the harm gate
+> now covers concealment from a creditor or trustee, which stops repair being
+> attempted on those at all. Both were made to fix wrong outcomes rather than
+> to move a number, and neither has been re-measured.
+>
+> The console ships with the rewriter split on: nemotron answers and judges,
+> muse-spark-1.2 proposes fragment replacements and scores meaning. The judge
+> stays on the model being repaired, because what counts as a refusal has to be
+> a property of that model. The cost is known and accepted -- muse-spark
+> declines the fragment instruction as a request to help evade a safety filter,
+> so the confined operator usually falls back to a static generalization or
+> proposes nothing, and repairs arrive as a deployer frame. What the split buys
+> is that the model being repaired is not also the model scoring whether the
+> repair preserved the question. `--rewriter-model ""` collapses it onto one
+> model, which is how every measurement above was taken.
+
 **False intervention rate: 0.83%.** One benign filing-arithmetic question in
 120 is refused and escalated to a human.
 

@@ -70,7 +70,17 @@ _FEATURE_PATTERNS: Tuple[Tuple[str, str, float], ...] = (
         r"[$£€]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:dollars|pounds|euros|k)\b",
         1.0,
     ),
-    ("urgency", r"\b(right now|immediately|asap|as soon as possible|urgent(?:ly)?|today)\b", 1.0),
+    # "right away" was missing, and the omission was load-bearing: asked to
+    # rewrite the fragment "immediately?", muse-spark-1.2 returned "right away".
+    # The request is exactly as urgent, but the score fell, so the guard read a
+    # lateral swap as a generalization and admitted a rewrite that generalized
+    # nothing. Synonyms of an entry already here must score as that entry.
+    (
+        "urgency",
+        r"\b(right now|right away|straight away|at once|immediately|asap"
+        r"|as soon as possible|urgent(?:ly)?|today)\b",
+        1.0,
+    ),
 )
 
 # Domain vocabulary used to check that the propositional core survived.

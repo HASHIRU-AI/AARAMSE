@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import threading
 
 import pytest
 
-from aaramse.__main__ import build_parser, main
+from aaramse.__main__ import (
+    _shutdown_event,
+    _wait_for_shutdown,
+    build_parser,
+    main,
+)
 
 
 def test_certificates_are_required_by_default():
@@ -89,3 +97,119 @@ def test_log_level_is_absent_when_not_given():
 def test_main_runs_without_an_explicit_log_level(tmp_path, capsys):
     """The resolution path must work, not just the parser."""
     assert main(["report", "--audit", str(tmp_path / "absent.jsonl")]) == 1
+
+
+def test_shutdown_wait_does_not_return_until_requested():
+    """signal.pause() returns on any interruption, so waiting must be a loop.
+
+    LiteLLM's lazy first-call import interrupts pause() within ~2s, which shut
+    the sidecar down on the first turn with exit code 0 and no log line.
+    """
+    stopping = threading.Event()
+    returned = threading.Event()
+
+    def wait() -> None:
+        _wait_for_shutdown(stopping, poll=0.01)
+        returned.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    assert not returned.wait(0.3), "the wait returned without a shutdown request"
+
+
+def test_shutdown_wait_returns_once_requested():
+    """A real SIGINT/SIGTERM must still stop the server promptly."""
+    stopping = threading.Event()
+    returned = threading.Event()
+
+    def wait() -> None:
+        _wait_for_shutdown(stopping, poll=0.01)
+        returned.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    stopping.set()
+    assert returned.wait(2.0), "the wait did not return after shutdown was requested"
+
+
+def test_sigterm_requests_shutdown():
+    """The handler must record the request, not shut the server down inline."""
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        stopping = _shutdown_event()
+        os.kill(os.getpid(), signal.SIGTERM)
+        assert stopping.wait(2.0), "SIGTERM did not request shutdown"
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def test_localization_budget_defaults_small_for_the_console():
+    """Localization probes dominate a repair's call burst.
+
+    The library default is 32, which is a measurement setting. A hosted free
+    tier throttles inside one repair at that size, so the deployment entry
+    point ships the value examples/serve_demo.py already demo-tuned to.
+    """
+    args = build_parser().parse_args(["serve"])
+    assert args.localization_budget == 8
+
+
+def test_localization_budget_can_be_raised():
+    """A smaller burst buys latency at the cost of a coarser fragment."""
+    args = build_parser().parse_args(["serve", "--localization-budget", "32"])
+    assert args.localization_budget == 32
+
+
+def test_localization_budget_reads_the_environment(monkeypatch):
+    """A container is configured by environment, not by argv."""
+    monkeypatch.setenv("AARAMSE_LOCALIZATION_BUDGET", "16")
+    args = build_parser().parse_args(["repair", "q"])
+    assert args.localization_budget == 16
+
+
+def test_answer_verification_is_on_for_deployment():
+    """A repair the user cannot read is not a repair.
+
+    FRAME_ASSERT cleared a prohibited query on one judge sample and the turn
+    was logged `repaired`, while the reply the user received was still a
+    refusal. AnswerCheck reads what the user would actually get, and returned
+    False on that exact pair.
+    """
+    assert build_parser().parse_args(["serve"]).verify_answers is True
+
+
+def test_answer_verification_can_be_turned_off():
+    """It moves the recovery rate, so an evaluation must be able to opt out."""
+    args = build_parser().parse_args(["serve", "--no-verify-answers"])
+    assert args.verify_answers is False
+
+
+def test_answer_verification_reads_the_environment(monkeypatch):
+    """A container is configured by environment, not by argv."""
+    monkeypatch.setenv("AARAMSE_VERIFY_ANSWERS", "0")
+    assert build_parser().parse_args(["repair", "q"]).verify_answers is False
+
+
+
+def test_the_console_defaults_to_the_split_pair():
+    """nemotron answers and judges; muse-spark proposes rewrites and scores meaning.
+
+    Known cost, accepted deliberately: muse-spark declines the fragment
+    instruction as a request to help evade a safety filter, so the confined
+    operator rarely proposes anything and repairs arrive as a deployer frame.
+    What the split buys is that the model being repaired is not also the model
+    scoring whether the repair preserved the question.
+    """
+    args = build_parser().parse_args(["serve"])
+    assert args.model == "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+    assert args.rewriter_model == "meta/muse-spark-1.2"
+
+
+def test_the_split_can_be_collapsed_onto_one_model():
+    """Every measurement in this repository was taken with one model doing both."""
+    args = build_parser().parse_args(["serve", "--rewriter-model", ""])
+    assert args.rewriter_model is None
+
+
+def test_the_rewriter_can_be_collapsed_onto_the_downstream_model(monkeypatch):
+    """Every measurement in the repo was taken with one model doing both."""
+    monkeypatch.setenv("AARAMSE_REWRITER_MODEL", "")
+    assert build_parser().parse_args(["serve"]).rewriter_model is None

@@ -22,6 +22,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from types import FrameType
@@ -97,15 +98,21 @@ def main() -> int:
     server = serve(gateway, port=PORT)
     _banner(certified, server.server_address[1], from_cache)
 
+    # Waiting on a flag rather than signal.pause(): pause() returns on any
+    # interruption, and LiteLLM's lazy first-call import supplies one, which
+    # killed this demo on its first turn.
+    stopping = threading.Event()
+
     def stop(signum: int, frame: Optional[FrameType]) -> None:
-        """Shut down cleanly on Ctrl-C."""
-        server.shutdown()
+        """Record the shutdown request; the main thread acts on it."""
+        stopping.set()
 
     for received in (signal.SIGINT, signal.SIGTERM):
         signal.signal(received, stop)
     try:
-        signal.pause()
-    except (AttributeError, KeyboardInterrupt):  # pragma: no cover
+        while not stopping.wait(1.0):
+            pass
+    except KeyboardInterrupt:  # pragma: no cover
         pass
     finally:
         server.shutdown()

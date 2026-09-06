@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 
 from aaramse.corpus import SEED_PAIRS
+from aaramse.harm import is_prohibited
 from aaramse.search import RepairSearch, SearchConfig, search_space_size
-from aaramse.types import Decision
+from aaramse.types import Decision, OperatorKind
 
 
 @pytest.mark.parametrize("pair", SEED_PAIRS, ids=lambda p: p.note)
@@ -92,9 +93,25 @@ def test_realizer_output_is_re_checked(search, monkeypatch):
     assert "Should I" not in result.rewritten
 
 
+
+def _ungated_twin(pairs) -> str:
+    """Return the first prohibited twin the harm gate does not cover.
+
+    The gate escalates before the search enumerates anything, so a test about
+    what the *search* recorded has to use a refusal the gate leaves to it.
+    Picked by asking rather than by index, so gating another twin later
+    reroutes these tests instead of silently changing what they assert.
+    """
+    for pair in pairs:
+        if not is_prohibited(pair.prohibited_twin):
+            return pair.prohibited_twin
+    raise AssertionError(
+        "every seed twin is harm-gated; these tests need one the search still explores"
+    )
+
 def test_escalation_carries_diagnostics(search, oracle, pairs):
     """An escalation must record why the search gave up, not just that it did."""
-    twin = pairs[0].prohibited_twin
+    twin = _ungated_twin(pairs)
     assert oracle.refuses(twin)
     result = search.repair(twin)
     assert result.decision is Decision.ESCALATED
@@ -123,7 +140,7 @@ def test_repair_and_passthrough_carry_no_diagnostics(search):
 
 def test_budget_exhaustion_is_distinguishable_from_content_refusal(search, oracle, pairs):
     """A starved budget escalates for a different reason than an upheld refusal."""
-    twin = pairs[0].prohibited_twin
+    twin = _ungated_twin(pairs)
     starved = RepairSearch(
         search.operators, oracle, config=SearchConfig(max_depth=3, max_oracle_calls=1)
     )
@@ -141,3 +158,33 @@ def test_failure_class_labels_the_three_count_regimes():
     assert SearchDiagnostics(3, 2, ()).failure_class == "model_upheld"
     # a probed refusal dominates even when some candidates were also blocked
     assert SearchDiagnostics(4, 1, ("P: x",)).failure_class == "model_upheld"
+
+
+def test_each_turn_starts_from_a_clean_operator(operators, oracle):
+    """Operators outlive a turn; what they tried during one must not.
+
+    A console rendering the attempt would otherwise show a fragment localized
+    for the previous reader's question.
+    """
+    class Remembering:
+        name = "REMEMBERING"
+        kind = OperatorKind.SUBTRACTIVE
+        invariant = "test double"
+
+        def __init__(self):
+            self.resets = 0
+
+        def reset(self):
+            self.resets += 1
+
+        def applicable(self, text):
+            return False
+
+        def apply(self, text):
+            return None
+
+    op = Remembering()
+    RepairSearch([op], oracle, config=SearchConfig(max_depth=2)).repair(
+        "Should I dump my 401(k) into gold before the crash?"
+    )
+    assert op.resets == 1

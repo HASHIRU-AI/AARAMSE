@@ -30,6 +30,7 @@ __all__ = [
     "MAX_JOBS",
     "Job",
     "JobStore",
+    "attempts_of",
     "console_html",
     "trace_of",
 ]
@@ -53,6 +54,44 @@ def console_html() -> bytes:
     return (_STATIC / "index.html").read_bytes()
 
 
+def attempts_of(operators: Any) -> List[Dict[str, Any]]:
+    """Report what each operator tried this turn, including when it lost.
+
+    The search returns the winning program and nothing else, so an operator
+    that localized a fragment, proposed a substitution and was then beaten by a
+    cheaper rewrite leaves no trace at all. On a live model FRAME_ASSERT wins
+    most turns, which means a reader watching the console sees a prefix being
+    prepended and never learns that the confined operator ran -- and the
+    confined operator is the interesting half of the method.
+
+    Args:
+        operators: The gateway's operator set, after the turn.
+
+    Returns:
+        One entry per operator that has something to report, oldest first.
+        Operators that recorded nothing are omitted, because a panel of empty
+        sections teaches a reader to stop looking at it.
+    """
+    attempts: List[Dict[str, Any]] = []
+    for operator in operators:
+        localization = getattr(operator, "last_localization", None)
+        rejected = list(getattr(operator, "rejected", ()) or ())
+        proposal = getattr(operator, "last_proposal", None)
+        if localization is None and not rejected and proposal is None:
+            continue
+        attempts.append({
+            "operator": getattr(operator, "name", type(operator).__name__),
+            "mrtf": getattr(localization, "text", None),
+            "localization_probes": getattr(localization, "tests", None),
+            "rejected": [[text, reason] for text, reason in rejected],
+            "proposed": {
+                "after": proposal.after,
+                "substitutions": [list(pair) for pair in proposal.generalizations],
+            } if proposal is not None else None,
+        })
+    return attempts
+
+
 def trace_of(
     result: RepairResult,
     answer: str,
@@ -60,6 +99,7 @@ def trace_of(
     audit: Optional[Dict[str, Any]] = None,
     elapsed_s: float = 0.0,
     model_calls: int = 0,
+    attempts: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Assemble everything a reader needs to judge one decision.
 
@@ -70,6 +110,9 @@ def trace_of(
         audit: The hash-chain record this decision produced.
         elapsed_s: Wall-clock seconds the turn took.
         model_calls: Model calls the turn consumed.
+        attempts: What each operator tried, from `attempts_of`. Included so a
+            losing operator is still visible; the winning program alone hides
+            the confined rewrite behind whichever operator was cheaper.
 
     Returns:
         A JSON-serialisable trace. `identical` is the passthrough guarantee
@@ -115,6 +158,9 @@ def trace_of(
         "audit": audit or {},
         "elapsed_s": round(elapsed_s, 2),
         "model_calls": model_calls,
+        # What each operator tried, including operators that lost. Without this
+        # a reader only ever sees the winner.
+        "attempts": attempts or [],
     }
 
 
