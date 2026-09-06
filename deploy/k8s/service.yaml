@@ -1,0 +1,15 @@
+# ClusterIP, not NodePort or LoadBalancer: nothing should reach the sidecar
+# except through the ingress, because the app itself is unauthenticated by
+# design and the ingress is where authentication happens.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aaramse
+spec:
+  type: ClusterIP
+  selector:
+    app: aaramse
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

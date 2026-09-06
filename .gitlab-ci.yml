@@ -1,0 +1,71 @@
+# Build the hosted image and deploy it to the sandpit cluster.
+#
+# Two stages, and the test stage is not ceremony: the suite is pure standard
+# library and runs in about a second, so there is no reason to build an image
+# from a red tree.
+stages:
+  - test
+  - build
+  - deploy
+
+variables:
+  IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+test:
+  stage: test
+  image: python:3.13-slim
+  # No pip install: the package and its tests import nothing outside the
+  # standard library. litellm is needed to call a model, not to test the layer.
+  script:
+    - pip install --no-cache-dir pytest
+    - PYTHONPATH=src python -m pytest -q
+
+build:
+  stage: build
+  # Kaniko rather than docker-in-docker: a Kubernetes runner has no Docker
+  # socket to bind, and kaniko needs no privileged container.
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - >-
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/deploy/Dockerfile"
+      --destination "$IMAGE"
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+deploy:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  # Set these in Settings -> CI/CD -> Variables, masked:
+  #   NVIDIA_NIM_API_KEY, META_API_KEY  -- provider credentials
+  #   JUDGE_USER, JUDGE_PASSWORD        -- the login handed to a reviewer
+  #   AARAMSE_HOST                      -- the hostname judges will visit
+  # KUBE_NAMESPACE and cluster credentials come from the GitLab agent.
+  script:
+    - kubectl -n "$KUBE_NAMESPACE" create secret generic aaramse-providers
+        --from-literal=NVIDIA_NIM_API_KEY="$NVIDIA_NIM_API_KEY"
+        --from-literal=META_API_KEY="$META_API_KEY"
+        --dry-run=client -o yaml | kubectl apply -f -
+    # htpasswd format, bcrypt. openssl is in the kubectl image; the password
+    # itself never lands in a manifest or an image layer.
+    - PASS_HASH=$(openssl passwd -apr1 "$JUDGE_PASSWORD")
+    - kubectl -n "$KUBE_NAMESPACE" create secret generic aaramse-basic-auth
+        --from-literal=auth="$JUDGE_USER:$PASS_HASH"
+        --dry-run=client -o yaml | kubectl apply -f -
+    - sed -i "s|IMAGE_PLACEHOLDER|$IMAGE|" deploy/k8s/deployment.yaml
+    - sed -i "s|HOST_PLACEHOLDER|$AARAMSE_HOST|" deploy/k8s/ingress.yaml
+    - kubectl -n "$KUBE_NAMESPACE" apply -f deploy/k8s/
+    - kubectl -n "$KUBE_NAMESPACE" rollout status deployment/aaramse --timeout=300s
+  environment:
+    name: sandpit
+    url: https://$AARAMSE_HOST
+  rules:
+    # Deploying every branch would mean two pods racing for one volume, which
+    # is the one thing the single-writer invariant cannot survive.
+    - if: $CI_COMMIT_BRANCH == "fix/serve-shutdown-and-refusal-oracle"
+      when: manual

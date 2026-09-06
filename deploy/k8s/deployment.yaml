@@ -1,0 +1,106 @@
+# One pod. Never two.
+#
+# The sidecar serialises every request on an in-process lock, and `AuditLog`
+# recomputes the chain's tail hash by reading the file before each append. Two
+# pods writing one volume would interleave appends and break the chain, which
+# is the artifact this whole project exists to produce.
+#
+# Two settings enforce that and both are load-bearing:
+#
+#   replicas: 1          -- obvious, and not enough on its own.
+#   strategy: Recreate   -- the one people miss. The default RollingUpdate
+#                           starts the new pod before stopping the old one, so
+#                           a routine deploy would briefly run exactly the two
+#                           writers replicas:1 was meant to prevent.
+#
+# Do not add a HorizontalPodAutoscaler. There is nothing here to scale.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aaramse
+  labels:
+    app: aaramse
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: aaramse
+  template:
+    metadata:
+      labels:
+        app: aaramse
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: aaramse
+          image: "IMAGE_PLACEHOLDER"   # set by CI to $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: AARAMSE_MODEL
+              value: "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+            - name: AARAMSE_REWRITER_MODEL
+              value: "meta/muse-spark-1.2"
+            # One process environment shared by every visitor: a key pasted by
+            # one would serve the next visitor's turns.
+            - name: AARAMSE_ALLOW_MODEL_SWAP
+              value: "0"
+            - name: AARAMSE_LOCALIZATION_BUDGET
+              value: "8"
+            - name: AARAMSE_AUDIT_PATH
+              value: "/data/gateway.jsonl"
+            - name: NVIDIA_NIM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aaramse-providers
+                  key: NVIDIA_NIM_API_KEY
+            - name: META_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aaramse-providers
+                  key: META_API_KEY
+                  optional: true
+          volumeMounts:
+            - name: audit
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          # Deliberately slack. A repair holds the service lock for up to five
+          # minutes, and /healthz waits on no lock, but a stingy liveness probe
+          # on a loaded pod would restart the process mid-repair and lose the
+          # turn. Restarting a stuck sidecar is worth less than not killing a
+          # working one.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              # LiteLLM's import alone is a few hundred MB. Under 1Gi the OOM
+              # killer takes the container mid-repair.
+              cpu: "1000m"
+              memory: "1536Mi"
+      # The audit file is appended to on the way out; give the process time to
+      # finish the turn it is on rather than truncating a record.
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: audit
+          persistentVolumeClaim:
+            claimName: aaramse-audit
