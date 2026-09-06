@@ -13,6 +13,7 @@ exact (fragment -> replacement) pairs rather than two whole prompts to diff.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Callable, List, Optional, Sequence, Tuple
@@ -28,6 +29,7 @@ from .types import OperatorApplication, OperatorKind, RewriteProgram
 __all__ = [
     "FRAGMENT_INSTRUCTION",
     "NEUTRAL_FRAGMENT_INSTRUCTION",
+    "STATIC_SUBSTITUTIONS",
     "SAMPLE_NUDGES",
     "TargetedConfig",
     "TargetedRepair",
@@ -77,6 +79,32 @@ Rules:
 - Output ONLY the replacement phrase, with no quotes, punctuation or explanation.
 
 Replacement:"""
+
+
+# Deterministic generalizations, tried only after the model has declined twice.
+#
+# A rule-based subtractive family used to ship in the package and was removed:
+# it produced 2 of 23 repairs against a real model, which is not a method. This
+# is not that family returning. It is a floor under the confined operator for
+# the case where the rewriter refuses the task outright -- muse-spark-1.2
+# declines FRAGMENT_INSTRUCTION on every sample -- and there the alternative is
+# no proposal at all rather than a better one.
+#
+# Every entry generalizes: it strips person marking, urgency or imperative mood
+# and supplies nothing. A rule that made a request more specific would be a
+# jailbreak with extra steps, and while IntentGuard would reject it, a table
+# that has to be caught by the guard is the wrong table.
+STATIC_SUBSTITUTIONS: Tuple[Tuple[str, str], ...] = (
+    (r"\bwalk\s+(?:me|us)\s+through\b", "what is the general process for"),
+    (r"\bhelp\s+(?:me|us)\s+understand\b", "what explains"),
+    (r"\bgive\s+(?:me|us)\s+the\s+steps\s+to\b", "what is the general process to"),
+    (r"\btell\s+(?:me|us)\s+how\s+to\b", "what is the general process for"),
+    (r"\bshould\s+i\b", "what factors determine whether an investor should"),
+    (r"\bcan\s+i\b", "is it generally possible to"),
+    (r"\b(?:right\s+now|immediately|asap|as\s+soon\s+as\s+possible|urgently|today)\b", ""),
+    (r"\bmy\b", "a"),
+    (r"\bme\b", "an investor"),
+)
 
 
 # Extra rule appended for the second and later samples of a fragment.
@@ -399,13 +427,34 @@ class TargetedRepair(RewriteOperator):
                     raw.strip()[:120] or "(empty)",
                     "replacement empty or unchanged from the fragment",
                 ))
-                return None
+                continue
             cap = max(3, len(fragment.split()) * self._config.max_replacement_ratio)
             if len(replacement.split()) > cap:
                 self.rejected.append((replacement, "replacement far longer than fragment"))
-                return None
+                continue
             return replacement
+
+        static = self._static_replacement(fragment)
+        if static is not None:
+            logger.info("using a static generalization for %r", fragment)
+            return static
         return None
+
+    @staticmethod
+    def _static_replacement(fragment: str) -> Optional[str]:
+        """Generalize a fragment by rule, or return None when none applies.
+
+        Deliberately small. It exists so a rewriter that refuses the task does
+        not leave the confined operator with nothing to propose; it is not a
+        substitute for one that answers.
+        """
+        out = fragment
+        for pattern, replacement in STATIC_SUBSTITUTIONS:
+            out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+        out = " ".join(out.split())
+        if not out or out.lower() == fragment.lower():
+            return None
+        return out
 
     def _reject_reason(
         self,

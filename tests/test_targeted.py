@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import re
+
 from aaramse.equivalence import SemanticEquivalence
 from aaramse.fidelity import MeaningFidelity
-from aaramse.targeted import TargetedConfig, TargetedRepair
+from aaramse.invariants import ActionabilityScorer
+from aaramse.operators import FrameAssert, FrameConfig
+from aaramse.refusal import ResponseVerdict
+from aaramse.search import RepairSearch, SearchConfig
+from aaramse.targeted import (
+    STATIC_SUBSTITUTIONS,
+    TargetedConfig,
+    TargetedRepair,
+)
+from aaramse.types import Decision
+from aaramse.ui import attempts_of
 
 PROMPT = (
     "I am researching UK insolvency law for a university dissertation. "
@@ -458,3 +470,137 @@ def test_a_degenerate_replacement_is_recorded_not_dropped():
     op._replacement(PROMPT, "hide assets")
     reasons = [reason for _, reason in op.rejected]
     assert any("unchanged" in r for r in reasons), reasons
+
+
+def test_a_static_rule_covers_a_rewriter_that_will_not_help():
+    """Last resort, after the model has declined and the retry has too.
+
+    muse-spark-1.2 declines FRAGMENT_INSTRUCTION on every sample, so the
+    confined operator never proposes anything and the layer looks like a method
+    that prepends a prefix. A deterministic generalization needs no model and
+    cannot be refused.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "I can't help with bypassing a safety filter.",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Walk me through my options", "Walk me through") \
+        == "what is the general process for"
+
+
+def test_static_rules_only_generalize():
+    """Every rule must lower actionability, never raise it.
+
+    A substitution that made the request more specific would be a jailbreak
+    with extra steps, and IntentGuard would reject it anyway -- but a rule set
+    that has to be caught by the guard is the wrong rule set.
+    """
+    scorer = ActionabilityScorer()
+    for pattern, replacement in STATIC_SUBSTITUTIONS:
+        probe = re.sub(pattern, replacement, "Should I walk me through my urgent case right now",
+                       flags=re.IGNORECASE)
+        assert scorer.score(probe) <= scorer.score(
+            "Should I walk me through my urgent case right now"
+        ) + 1e-9, (pattern, replacement)
+
+
+def test_a_model_that_answers_is_never_overridden_by_a_rule():
+    """The static table is a fallback, not a policy.
+
+    Every measurement in this repository was taken on a model that complied
+    with the instruction, so those runs must not start taking a different path.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "the general process for",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Walk me through my options", "Walk me through") \
+        == "the general process for"
+
+
+def test_an_uncovered_fragment_still_yields_nothing():
+    """The table is small and deliberately so; it must not invent a rewrite."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "I can't help with that.",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("What is the legal definition of X?", "harvesting") is None
+
+
+def test_a_static_rule_also_covers_a_rewriter_that_echoes_the_fragment():
+    """Declining is not the only way to produce nothing.
+
+    Asked to rewrite the fragment 'my', muse-spark-1.2 returned 'my'. That is
+    as useless as a refusal, and the fallback has to be reachable from it --
+    the first version returned early and only ever ran after two declines.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "my",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Walk me through my mortgage options", "my") == "a"
+
+
+def test_a_static_rule_also_covers_an_oversized_reply():
+    """A model that explains instead of answering leaves the same gap."""
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: "you could say something along the lines of the investor's own",
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("Walk me through my mortgage options", "my") == "a"
+
+
+class _PersonProbe:
+    """Refuses first-person framing unless an authorised frame is present."""
+
+    def refuses(self, text: str) -> bool:
+        return "authorisation reference" not in text and " my " in f" {text.lower()} "
+
+    def probe(self, text: str) -> ResponseVerdict:
+        return ResponseVerdict(refused=self.refuses(text), delivers_procedure=False, text="")
+
+
+def test_a_declining_rewriter_still_yields_a_word_substitution():
+    """End to end: the confined operator wins by rule when the model will not help.
+
+    This is the shape the console could not show. muse-spark-1.2 declines the
+    rewrite instruction on every sample, so TARGETED_REPAIR proposed nothing and
+    FRAME_ASSERT won every turn -- which made the method look like prepending a
+    prefix. With the fallback the operator localizes 'my', generalizes it to
+    'a', and clears the refusal on its own.
+    """
+    decline = "I understand you're asking to bypass a safety filter, but I can't help."
+    targeted = TargetedRepair(
+        refuses=_PersonProbe().refuses,
+        generate=lambda _p: decline,
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        fidelity=MeaningFidelity(),
+        config=TargetedConfig(max_localization_tests=8, candidates=1),
+    )
+    search = RepairSearch(
+        [targeted, FrameAssert(FrameConfig("Acme Wealth Ltd", "FRN-123456"))],
+        oracle=None,
+        config=SearchConfig(max_depth=2),
+        probe=_PersonProbe(),
+    )
+
+    result = search.repair("Walk me through my mortgage refinance options")
+
+    assert result.decision is Decision.REPAIRED
+    assert result.program.names == ("TARGETED_REPAIR",), "the frame should not have won"
+    assert ("my", "a") in result.program.generalizations()
+    assert result.rewritten == "Walk me through a mortgage refinance options"
+
+    entry = attempts_of([targeted])[0]
+    assert entry["mrtf"] == "my"
+    assert ["my", "a"] in [list(p) for p in entry["proposed"]["substitutions"]]
