@@ -339,8 +339,47 @@ def test_nvidia_nim_thinking_can_be_re_enabled_explicitly():
     assert client.extra["extra_body"]["chat_template_kwargs"] == {"thinking": True}
 
 
+def test_meta_models_request_minimal_reasoning():
+    """Muse Spark reasons by default; the layer measures replies, not notes."""
+    client = build_client("meta/muse-spark-1.2")
+    assert client.extra["reasoning_effort"] == "minimal"
+
+
+def test_meta_reasoning_effort_can_be_overridden():
+    """A caller who wants the model to think can say so."""
+    client = build_client("meta/muse-spark-1.2", extra={"reasoning_effort": "high"})
+    assert client.extra["reasoning_effort"] == "high"
+
+
+def test_meta_models_get_reasoning_headroom():
+    """An 8-token judge budget is entirely consumed by reasoning without it."""
+    client = build_client("meta/muse-spark-1.2")
+    assert client.reasoning_headroom == 1024
+
+
+def test_reasoning_headroom_widens_the_token_budget():
+    """The headroom is added to whatever the caller asked for."""
+    sent = {}
+
+    class Recording(LiteLLMClient):
+        def _completion(self, **kwargs):
+            sent.update(kwargs)
+            raise ModelUnavailable("stop here")
+
+    client = Recording(model="meta/muse-spark-1.2", reasoning_headroom=1024)
+    with pytest.raises(ModelUnavailable):
+        client.complete("hello", 0.0, 8)
+    assert sent["max_tokens"] == 8 + 1024
+
+
+def test_models_that_do_not_reason_get_no_headroom():
+    """The cap the judges rely on is not loosened without a reason."""
+    assert build_client("openai:gpt-5").reasoning_headroom == 0
+    assert build_client("gemma4:12b").reasoning_headroom == 0
+
+
 def test_non_nim_litellm_routes_are_left_alone():
-    """Only the two providers with a known failure get a reasoning override."""
+    """Only the providers with a known failure get a reasoning override."""
     client = build_client("openai:gpt-5")
     assert "extra_body" not in client.extra
     assert "think" not in client.extra

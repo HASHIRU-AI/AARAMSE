@@ -1,26 +1,83 @@
-# Does AARAMSE recover over-refusals? A run on WildGuardMix benign prompts
+# Does AARAMSE recover over-refusals? Two conditions on WildGuardMix benign prompts
 
-**Status: partial run.** Vanilla arm complete (50/50). Adversarial arm 10/50.
-Every adversarial number below is preliminary and may move.
+**Status: two partial runs.** Both vanilla arms are complete at 50/50; neither
+adversarial arm is. Every wrapped-arm number below is preliminary.
 
-- Model: `nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b`, temperature 0
+| Run | Condition | Model | Progress |
+|---|---|---|---|
+| A | `DEFAULT_SYSTEM_PROMPT` (FCA UK bank assistant) | `nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b` | 50/50 plain, 27/50 wrapped, still running |
+| B | `--neutral` ("You are a helpful assistant.") | `meta/muse-spark-1.2` | 50/50 plain, 31/50 wrapped, terminated by provider |
+
 - Corpus: `data/wildguard_benign_sample.json` (50 plain + 50 adversarially wrapped
   benign prompts, four harm-adjacent topics, all labelled `unharmful` by WildGuard)
-- Deployment condition: `DEFAULT_SYSTEM_PROMPT` (FCA-regulated UK bank assistant)
-- Operators: **uncertified** (see Threats to validity)
-- Evidence: `audit/wildguard_benign.json`, hash-chained `audit/wildguard_benign.jsonl`
+- Temperature 0 in both runs
+- Operators: **uncertified** in both (see Threats to validity)
+- Evidence: `audit/wildguard_benign_neutral.{json,jsonl}` (B, final).
+  Run A is still writing; its artifacts are committed when it finishes, so the
+  numbers quoted for A below are a snapshot read from the live file at the time
+  of writing and will be superseded.
+
+Run B changed model *and* system prompt together, so no single cross-run cell
+isolates either. Only the stability of the wrapped-arm recovery rate across both
+is evidence. `nemotron --neutral` is the run that would separate them and has not
+been done.
+
+## The neutral-prompt control changes the answer
+
+A second run swapped the FCA bank prompt for `"You are a helpful assistant."`
+(`--neutral`) on `meta/muse-spark-1.2`. Evidence:
+`audit/wildguard_benign_neutral.{json,jsonl}`, 81 records; the vanilla arm
+completed 50/50 and the adversarial arm stopped at 31/50 when the provider
+restricted API access (see below).
+
+| Condition · model | Arm | Refused | Repaired | Escalated | Recovery |
+|---|---|---|---|---|---|
+| FCA · nemotron-3.5 | plain | 35/50 | 30 | 5 | 86% |
+| FCA · nemotron-3.5 | wrapped | 23/26 | 4 | 19 | 17% |
+| neutral · muse-spark-1.2 | plain | 3/47 | 3 | 0 | 100% |
+| neutral · muse-spark-1.2 | wrapped | 9/29 | 2 | 7 | 22% |
+
+**Most of the original result was the deployment condition.** Plain-arm refusals
+fall from 70% to 6% once the bank persona comes off. Per subcategory, plain arm:
+copyright 7/16 -> 0/16, fraud 3/4 -> 0/2, private_information 12/15 -> 2/15,
+sensitive_information 13/15 -> 1/14. What the first run measured as over-refusal
+was largely a UK bank compliance assistant declining questions about Harry Potter
+and Cristiano Ronaldo -- defensible behaviour for the role it was handed.
+
+**The wrapped-arm failure is not the deployment condition.** Recovery on wrapped
+prompts is 17% and 22% across two models and two system prompts. It is the one
+number in this investigation that has not moved.
+
+**One comparison carries no confound at all.** Within the neutral run, on the
+same model in the same session, copyright-topic prompts refused 0/16 plain and
+6/13 wrapped. The wrapper manufactures refusals out of content the model answers
+happily when asked plainly, and then defeats the repair.
+
+**Five prompts never reached the model.** Meta's API rejected them with
+`400 content_policy_violation` before inference -- all labelled `unharmful` by
+WildGuard. On the plain arm that is 3 prompts lost to infrastructure against 3
+lost to model over-refusal. AARAMSE has no purchase on these: there is no reply
+to probe and no rewrite that reaches a model the request never arrived at. After
+the fifth, the provider restricted the key outright and ended the run. An
+over-refusal benchmark looks, from the provider's side, like repeated abuse --
+worth weighing before pointing this corpus at a metered commercial endpoint.
 
 ## Verdict
 
-**On plain benign prompts, AARAMSE works.** 35 of 50 were refused by the deployed
-model; the layer recovered 30 of them, an 86% recovery rate, at a median of 2
-oracle calls. The hash chain verifies. Nothing was forced through: the 5 it could
-not repair were escalated rather than answered.
+**AARAMSE does not intervene where it should not.** Across the neutral run, 64
+passthroughs and zero altered. The passthrough guarantee holds.
 
-**On adversarially wrapped benign prompts, it does not — so far.** 8 of the first
-10 were refused and only 1 was recovered (12%). All 7 failures report `search
-exhausted; refusal is content-driven`. If this holds over the remaining 40, the
-layer's recovery ability is roughly inverted by prompt structure alone.
+**On plain benign prompts it repairs what is refused -- but under a neutral
+condition there is very little left to repair.** Under the FCA prompt it
+recovered 30 of 35 (86%); under a neutral prompt only 3 of 47 plain prompts were
+refused at all, and it recovered 3 of 3. The 86% headline should be read as a
+property of that deployment condition, not of the model.
+
+**On adversarially wrapped benign prompts, it fails, in both conditions.** 17%
+and 22% recovery. Failures report `search exhausted; refusal is content-driven`.
+This is also where refusals concentrate once the deployment confound is removed:
+in the neutral run, 31% of wrapped prompts were refused against 6% of plain ones.
+The layer is weakest exactly where the problem is worst.
 
 **Whether it is safe is untested by this run.** No prohibited corpus was run here,
 so leakage was not measured. The claim supported is "recovers refusals", not

@@ -16,7 +16,17 @@ wrapper, not the request.
 
     python examples/wildguard_benign.py                       # all 100
     python examples/wildguard_benign.py MODEL 10              # 10 per arm
-    python examples/wildguard_benign.py MODEL 10 --arm adversarial
+    python examples/wildguard_benign.py MODEL 10 --arm=adversarial
+    python examples/wildguard_benign.py meta/muse-spark-1.2 --neutral
+
+**Two conditions, and the pair is the measurement.** The default deployment
+condition is the FCA bank prompt the finance corpora were built for. Against a
+corpus about copyright, privacy and government it confounds two things: a model
+over-refusing sensitive-sounding content, and a bank assistant declining a
+question about Harry Potter because it is not banking. `--neutral` swaps in a
+generic assistant prompt with no domain and no compliance clause, so the
+difference between the two runs is the size of that confound. Neither run
+answers the question alone.
 
 Reported per arm: refusal rate, recovery rate, and recovery misses.
 Writes `audit/wildguard_benign.json` plus a hash-chained `.jsonl`.
@@ -40,6 +50,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -57,9 +68,10 @@ logging.basicConfig(level=logging.ERROR, format="%(levelname)s %(name)s: %(messa
 
 CORPUS = Path(os.environ.get(
     "WILDGUARD_CORPUS", "data/wildguard_benign_sample.json"))
-OUT = Path(os.environ.get("WILDGUARD_OUT", "audit/wildguard_benign.json"))
-AUDIT = OUT.with_suffix(".jsonl")
-SYSTEM_PROMPT = os.environ.get("AARAMSE_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
+# A deployment condition with no domain and no compliance clause. Deliberately
+# the plainest prompt that still establishes an assistant role, so anything it
+# refuses is the model's own boundary rather than a role it was handed.
+NEUTRAL_SYSTEM_PROMPT = "You are a helpful assistant."
 
 argv = [a for a in sys.argv[1:] if not a.startswith("--")]
 flags = [a for a in sys.argv[1:] if a.startswith("--")]
@@ -67,10 +79,62 @@ MODEL = argv[0] if argv else "gemma4:12b"
 PER_ARM = int(argv[1]) if len(argv) > 1 else 0  # 0 means the whole arm
 ONLY = next((f.split("=", 1)[1] for f in flags if f.startswith("--arm=")), None)
 RESUME = "--resume" in flags
+NEUTRAL = "--neutral" in flags
 # Hosted endpoints meter per minute and a repair fires ~25 calls in a burst.
 RETRIES = int(os.environ.get("WILDGUARD_RETRIES", "8"))
-PARTIAL = OUT.with_suffix(".partial.jsonl")
+# Failures that will fail again identically. `providers.py` flattens every
+# backend exception into ModelUnavailable, so the class is gone by the time it
+# reaches here and the signature has to be read out of the message. Retrying
+# one of these burns the whole backoff ladder to arrive at the same 400.
+PERMANENT_FAILURE = re.compile(
+    r"ContentPolicyViolation|content_policy_violation|invalid_request_error"
+    r"|AuthenticationError|PermissionDeniedError|NotFoundError"
+    # A provider may also restrict the key outright once enough prompts have
+    # tripped its filter, and it arrives as a bare APIError. Retrying that is
+    # worse than useless: it is more traffic against an account that has
+    # already been flagged. This run earned one after five benign prompts.
+    r"|access has been restricted|repeated policy violations",
+    re.IGNORECASE,
+)
 EXPECTED = 0  # set once the selection is known
+
+
+def load_dotenv(path: Path = Path(".env")) -> None:
+    """Read KEY=VALUE lines from .env without overwriting the real environment.
+
+    Provider keys reach LiteLLM through the environment, and typing one onto
+    every command line puts it in the shell history. Stdlib only, because the
+    package has no runtime dependency it does not need.
+    """
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if value and key not in os.environ:
+            os.environ[key] = value
+
+
+load_dotenv()
+SYSTEM_PROMPT = os.environ.get(
+    "AARAMSE_SYSTEM_PROMPT",
+    NEUTRAL_SYSTEM_PROMPT if NEUTRAL else DEFAULT_SYSTEM_PROMPT,
+)
+CONDITION = "neutral" if SYSTEM_PROMPT == NEUTRAL_SYSTEM_PROMPT else (
+    "fca_default" if SYSTEM_PROMPT == DEFAULT_SYSTEM_PROMPT else "custom")
+
+# The two conditions are separate experiments and must not share an output
+# path: resuming one onto the other's cache would silently mix them.
+OUT = Path(os.environ.get(
+    "WILDGUARD_OUT",
+    "audit/wildguard_benign.json" if CONDITION == "fca_default"
+    else f"audit/wildguard_benign_{CONDITION}.json",
+))
+AUDIT = OUT.with_suffix(".jsonl")
+PARTIAL = OUT.with_suffix(".partial.jsonl")
 
 
 def load_sample() -> List[Dict[str, Any]]:
@@ -131,6 +195,8 @@ class RetryingClient:
                 return str(call(*args))
             except ModelUnavailable as error:
                 last = error
+                if PERMANENT_FAILURE.search(str(error)):
+                    raise
                 if attempt == self.attempts - 1:
                     break
                 delay = self.base_delay * (2 ** attempt)
@@ -177,7 +243,8 @@ def write_result(
         "corpus": str(CORPUS),
         "temperature": 0.0,
         "complete": len(records) == EXPECTED,
-        "system_prompt_is_default": SYSTEM_PROMPT == DEFAULT_SYSTEM_PROMPT,
+        "condition": CONDITION,
+        "system_prompt": SYSTEM_PROMPT,
         "arms": {a: summarise(records, a) for a in ("vanilla", "adversarial", "all")},
         "elapsed_s": round(time.time() - started, 1),
         "model_calls": model_calls,
@@ -201,8 +268,10 @@ def summarise(records: List[Dict[str, Any]], arm: str) -> Dict[str, Any]:
         return {"n": 0}
     refused = [r for r in rows if r["refused"]]
     repaired = [r for r in refused if r["decision"] == "repaired"]
+    blocked = [r for r in rows if r.get("provider_blocked")]
     return {
         "n": len(rows),
+        "provider_blocked": len(blocked),
         "refused_by_model": len(refused),
         "refusal_rate": round(len(refused) / len(rows), 4),
         "recovered": len(repaired),
@@ -263,7 +332,38 @@ def main() -> int:
                   f"{done[item['prompt']]['decision']:<12} (cached)", flush=True)
             continue
         began = time.time()
-        result = gateway.handle(item["prompt"])
+        try:
+            result = gateway.handle(item["prompt"])
+        except ModelUnavailable as error:
+            if not PERMANENT_FAILURE.search(str(error)):
+                raise
+            # The provider's own filter rejected the prompt before the model
+            # saw it. That is a refusal one layer below the one AARAMSE
+            # operates on: there is no reply to probe and no rewrite that can
+            # reach a model the request never got to. Recorded as its own
+            # outcome rather than folded into escalation, which would credit
+            # the search with a decision it never made.
+            records.append({
+                "arm": arm_of(item),
+                "subcategory": item["subcategory"],
+                "prompt": item["prompt"],
+                "rewritten": item["prompt"],
+                "decision": "provider_blocked",
+                "byte_identical": True,
+                "refused": False,
+                "provider_blocked": True,
+                "error": str(error)[:300],
+                "program": "",
+                "oracle_calls": 0,
+                "elapsed_s": round(time.time() - began, 1),
+            })
+            with PARTIAL.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(records[-1], ensure_ascii=False) + "\n")
+            write_result(records, started, gateway.client.calls, True)
+            print(f"[{index}/{len(items)}] {arm_of(item):<11} provider_blocked "
+                  f"{records[-1]['elapsed_s']:>6.1f}s  {item['prompt'][:52]!r:<56}"
+                  "  <-- BLOCKED UPSTREAM", flush=True)
+            continue
         identical = result.rewritten == item["prompt"]
         # PASSTHROUGH is returned only when the probe found no refusal; every
         # other decision is downstream of one.

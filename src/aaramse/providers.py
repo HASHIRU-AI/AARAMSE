@@ -245,6 +245,13 @@ class LiteLLMClient(CachingClient):
             for 0 nearly everywhere, so sending it turns every call into a 400.
         extra: Additional keyword arguments forwarded to `litellm.completion`
             verbatim, for provider-specific parameters this class does not model.
+        reasoning_headroom: Extra `max_tokens` granted on every call, for models
+            that cannot be stopped from reasoning. `max_tokens` caps reasoning
+            *and* content together, and this package asks for budgets as small
+            as 8 tokens when judging, so on such a model the budget is spent
+            deliberating and `content` comes back empty -- which it cannot tell
+            apart from a model that answered with nothing. Left at 0 for models
+            that do not reason, since it loosens the cap the judges rely on.
     """
 
     model: str
@@ -253,6 +260,7 @@ class LiteLLMClient(CachingClient):
     timeout: int = 300
     send_temperature: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
+    reasoning_headroom: int = 0
     calls: int = 0
     _cache: Dict[Tuple[str, ...], str] = field(default_factory=dict, repr=False)
 
@@ -284,7 +292,7 @@ class LiteLLMClient(CachingClient):
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens + self.reasoning_headroom,
             "timeout": self.timeout,
             **self.extra,
         }
@@ -457,6 +465,23 @@ def build_client(
             body.setdefault("chat_template_kwargs", {"thinking": False})
             extra["extra_body"] = body
             kwargs["extra"] = extra
+        elif model.startswith("meta/"):
+            # Muse Spark is a reasoning model too, but the Meta Model API is
+            # OpenAI-compatible and takes the standard `reasoning_effort`, so
+            # there is no vendor-specific body to build. "minimal" rather than
+            # "none": model_cost advertises supports_minimal_reasoning_effort
+            # for muse-spark-1.2 and says nothing about "none", and a rejected
+            # parameter is a 400 on every call rather than a quiet fallback.
+            extra = dict(kwargs.get("extra") or {})
+            extra.setdefault("reasoning_effort", "minimal")
+            kwargs["extra"] = extra
+            # Muse Spark cannot be told to stop reasoning -- the API rejects
+            # reasoning_effort="none" outright -- and at "minimal" it still
+            # spent 70-237 tokens deliberating before answering a judge-shaped
+            # prompt. Against a 24-token judge budget that is the whole budget,
+            # so every instrument in the package returned "". Measured worst
+            # case was 237; 1024 leaves room for the long adversarial prompts.
+            kwargs.setdefault("reasoning_headroom", 1024)
         return LiteLLMClient(model=model, system_prompt=system_prompt, **kwargs)
 
     provider, model = parse_spec(spec)
