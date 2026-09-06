@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     def add_gateway_options(sub: argparse.ArgumentParser) -> None:
         """Options shared by every subcommand that builds a gateway."""
         sub.add_argument(
-            "--model", default=_env("AARAMSE_MODEL", "gemma4:12b"),
+            "--model", default=_env("AARAMSE_MODEL", "meta/muse-spark-1.2"),
             help='Model spec: "openai:gpt-5", "anthropic:claude-opus-5", or an Ollama tag.',
         )
         sub.add_argument(

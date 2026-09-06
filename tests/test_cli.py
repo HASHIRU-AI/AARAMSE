@@ -186,3 +186,8 @@ def test_answer_verification_reads_the_environment(monkeypatch):
     """A container is configured by environment, not by argv."""
     monkeypatch.setenv("AARAMSE_VERIFY_ANSWERS", "0")
     assert build_parser().parse_args(["repair", "q"]).verify_answers is False
+
+
+def test_default_model_is_the_preloaded_console_model():
+    """The console ships pointed at a model, not at whatever is on localhost."""
+    assert build_parser().parse_args(["serve"]).model == "meta/muse-spark-1.2"

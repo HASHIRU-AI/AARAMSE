@@ -8,6 +8,7 @@ sidecar.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -171,3 +172,56 @@ def test_health_still_answers_when_the_model_is_down(tmp_path):
     dead = GatewayService(gateway=Gateway.build(config=config, client=DeadClient()))
     status, _, _ = dead.dispatch("GET", "/healthz", b"", None)
     assert status == 200
+
+
+def _swap(service: GatewayService, payload, auth="Bearer secret"):
+    """Issue a model-swap request and return (status, decoded body)."""
+    body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+    status, _, out = service.dispatch("POST", "/v1/model", body, auth)
+    return status, json.loads(out)
+
+
+def test_model_can_be_swapped_at_runtime(service):
+    """A reader with their own credentials must not have to restart the process."""
+    status, body = _swap(service, {"model": "openai:gpt-5"})
+    assert status == 200
+    assert body["model"] == "openai/gpt-5"
+    assert service.gateway.config.model == "openai/gpt-5"
+
+
+def test_swapping_keeps_the_rest_of_the_deployment(service):
+    """Only the model moves: the compliance prompt is the deployment condition."""
+    before = service.gateway.config.system_prompt
+    _swap(service, {"model": "openai:gpt-5"})
+    assert service.gateway.config.system_prompt == before
+
+
+def test_swapping_gives_each_model_its_own_chain(service):
+    """A hash chain spanning two models describes neither of them."""
+    before = service.gateway.config.audit_path
+    _swap(service, {"model": "openai:gpt-5"})
+    assert service.gateway.config.audit_path != before
+
+
+def test_an_api_key_is_stored_but_never_echoed(service, monkeypatch):
+    """The key goes to the provider, never back to the browser or the log."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    status, body = _swap(service, {"model": "openai:gpt-5", "api_key": "sk-secret-value"})
+    assert status == 200
+    assert "sk-secret-value" not in json.dumps(body)
+    assert os.environ["OPENAI_API_KEY"] == "sk-secret-value"
+
+
+def test_an_unusable_spec_is_refused_before_the_gateway_moves(service):
+    """A bad spec must fail as a message, not as a 503 on the next turn."""
+    was = service.gateway.config.model
+    status, body = _swap(service, {"model": "   "})
+    assert status == 400
+    assert "error" in body
+    assert service.gateway.config.model == was
+
+
+def test_swapping_the_model_requires_the_token(service):
+    """The swap sets a credential; it is not a public route."""
+    status, _, _ = service.dispatch("POST", "/v1/model", b'{"model":"openai:gpt-5"}', None)
+    assert status == 401

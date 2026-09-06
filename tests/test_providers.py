@@ -18,6 +18,7 @@ from aaramse.providers import (
     LiteLLMClient,
     MissingCredential,
     OpenAIClient,
+    api_key_env_for,
     build_client,
     litellm_spec,
     parse_spec,
@@ -459,3 +460,28 @@ def test_non_rate_limit_errors_are_not_retried():
     with pytest.raises(ModelUnavailable):
         Broken(model="nvidia_nim/x", sleep=slept.append).complete("q")
     assert slept == [], "a non-retryable error must fail immediately"
+
+
+def test_meta_sends_temperature_so_runs_reproduce():
+    """A demo a judge cannot reproduce is an anecdote.
+
+    Muse Spark's API is OpenAI-compatible and accepts temperature, unlike the
+    recent OpenAI and Anthropic models this defaults off for.
+    """
+    client = build_client("meta/muse-spark-1.2")
+    assert client.send_temperature is True
+
+
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        ("meta/muse-spark-1.2", "META_API_KEY"),
+        ("nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b", "NVIDIA_NIM_API_KEY"),
+        ("openai:gpt-5", "OPENAI_API_KEY"),
+        ("anthropic:claude-opus-5", "ANTHROPIC_API_KEY"),
+        ("gemma4:12b", None),
+    ],
+)
+def test_api_key_env_is_derived_from_the_spec(spec, expected):
+    """The console takes a key from a form and has to know where to put it."""
+    assert api_key_env_for(spec) == expected

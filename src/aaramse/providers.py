@@ -36,6 +36,7 @@ from .client import (
 
 __all__ = [
     "ANTHROPIC_VERSION",
+    "api_key_env_for",
     "DEFAULT_BACKEND",
     "AnthropicClient",
     "LiteLLMClient",
@@ -49,6 +50,9 @@ __all__ = [
 # Which client `build_client` returns when the caller does not say. LiteLLM by
 # default: provider control is worth one dependency.
 DEFAULT_BACKEND = "litellm"
+
+# Providers that need no credential: a local server is reached by URL alone.
+_KEYLESS_PROVIDERS = frozenset({"ollama", "ollama_chat", "llamafile"})
 
 logger = logging.getLogger(__name__)
 
@@ -449,6 +453,25 @@ def litellm_spec(spec: str) -> str:
     return f"{provider}/{model}"
 
 
+def api_key_env_for(spec: str) -> Optional[str]:
+    """Return the environment variable a provider reads its credential from.
+
+    The console accepts a model and a key from a form and has to know where to
+    put the key. LiteLLM's convention is the provider name upper-cased with
+    `_API_KEY`, which covers every hosted provider this package names.
+
+    Args:
+        spec: A model spec in any form `litellm_spec` accepts.
+
+    Returns:
+        The variable name, or None for a provider that needs no credential.
+    """
+    provider = litellm_spec(spec).split("/", 1)[0].strip()
+    if not provider or provider in _KEYLESS_PROVIDERS:
+        return None
+    return f"{provider.upper()}_API_KEY"
+
+
 def _resolve_backend(backend: Optional[str]) -> str:
     """Pick the client backend from the argument, the environment, or the default."""
     chosen = (backend or os.environ.get("AARAMSE_CLIENT_BACKEND") or DEFAULT_BACKEND).strip()
@@ -522,6 +545,11 @@ def build_client(
             extra = dict(kwargs.get("extra") or {})
             extra.setdefault("reasoning_effort", "minimal")
             kwargs["extra"] = extra
+            # The Meta API accepts temperature, unlike the recent OpenAI and
+            # Anthropic models this defaults off for. This package asks for 0
+            # nearly everywhere, so sending it is what makes a console run
+            # reproducible rather than merely repeatable-ish.
+            kwargs.setdefault("send_temperature", True)
             # Muse Spark cannot be told to stop reasoning -- the API rejects
             # reasoning_effort="none" outright -- and at "minimal" it still
             # spent 70-237 tokens deliberating before answering a judge-shaped

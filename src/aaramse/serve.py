@@ -23,14 +23,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple, Type
 
 from .client import ModelUnavailable
 from .gateway import Gateway
+from .providers import api_key_env_for, litellm_spec
 from .ui import JobStore, baseline_of, console_html, trace_of
 
 __all__ = [
@@ -51,6 +53,11 @@ MAX_BODY_BYTES = 64 * 1024
 TOKEN_ENV = "AARAMSE_API_TOKEN"
 
 Response = Tuple[int, str, bytes]
+
+
+def _model_slug(spec: str) -> str:
+    """Filesystem-safe stem for a model spec, for its own audit chain."""
+    return re.sub(r"[^a-z0-9]+", "-", spec.lower()).strip("-") or "model"
 
 
 def _html(status: int, payload: bytes) -> Response:
@@ -131,6 +138,8 @@ class GatewayService:
                 return self._chat_start(body)
             if method == "GET" and route.startswith("/v1/chat/"):
                 return self._chat_poll(route.rsplit("/", 1)[-1])
+            if method == "POST" and route == "/v1/model":
+                return self._swap_model(body)
             if method == "GET" and route == "/v1/config":
                 return _json(200, {
                     "model": self.gateway.config.model,
@@ -143,6 +152,8 @@ class GatewayService:
                         for name, cert in self.gateway.certificates.items()
                     },
                     "authenticated": self.token is not None,
+                    "api_key_env": api_key_env_for(self.gateway.config.model),
+                    "credential_present": self._credential_present(),
                 })
             if method == "GET" and route == "/v1/report":
                 with self.lock:
@@ -159,6 +170,67 @@ class GatewayService:
             logger.error("model backend unavailable: %s", error)
             return _json(503, {"error": "model backend unavailable", "detail": str(error)})
         return _json(404, {"error": "not found", "path": route})
+
+    def _credential_present(self) -> bool:
+        """Return whether the current model's credential is in the environment."""
+        env = api_key_env_for(self.gateway.config.model)
+        return env is None or bool(os.environ.get(env, "").strip())
+
+    def _swap_model(self, body: bytes) -> Response:
+        """Point the layer at a different model, with an optional credential.
+
+        The console is a local tool, which is the only reason this is
+        acceptable: a key posted here is put in this process's environment for
+        the provider to read, and is never written to disk, logged, echoed back,
+        or recorded in a run. Exposing this port would be exposing a credential
+        sink.
+
+        The audit path moves with the model. A hash chain spanning two models
+        describes neither of them, and `intervention_report` takes the model as
+        a parameter precisely because the records do not carry one.
+        """
+        if len(body) > MAX_BODY_BYTES:
+            return _json(413, {"error": "request body too large"})
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "body is not valid JSON"})
+        if not isinstance(payload, dict):
+            return _json(400, {"error": "body must be a JSON object"})
+
+        model = payload.get("model")
+        if not isinstance(model, str) or not model.strip():
+            return _json(400, {"error": "'model' must be a non-empty string"})
+        try:
+            spec = litellm_spec(model.strip())
+        except ValueError as error:
+            # A bad spec fails here as a sentence, rather than as a 503 on the
+            # reader's next turn with nothing saying which field was wrong.
+            return _json(400, {"error": str(error)})
+
+        key = payload.get("api_key")
+        env = api_key_env_for(spec)
+        if isinstance(key, str) and key.strip() and env:
+            os.environ[env] = key.strip()
+
+        with self.lock:
+            base = self.gateway.config
+            audit = base.audit_path.parent / (
+                f"{base.audit_path.stem}_{_model_slug(spec)}{base.audit_path.suffix}"
+            )
+            self.gateway = Gateway.build(replace(base, model=spec, audit_path=audit))
+            # Jobs describe turns taken against the previous model; keeping them
+            # would let the console poll a trace and render it under a heading
+            # naming a model that never produced it.
+            self.jobs = JobStore()
+
+        logger.info("model swapped to %s (credential env: %s)", spec, env or "none")
+        return _json(200, {
+            "model": spec,
+            "api_key_env": env,
+            "credential_present": self._credential_present(),
+            "audit_path": str(self.gateway.config.audit_path),
+        })
 
     def _repair(self, body: bytes) -> Response:
         """Handle one repair request."""
