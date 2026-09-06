@@ -423,8 +423,6 @@ def test_a_later_failure_does_not_erase_an_earlier_localization():
     result with that None makes the console report no fragment on a turn where
     one was found and edited.
     """
-    calls = {"n": 0}
-
     def refuses(text: str) -> bool:
         # Refuses the bare prompt; the framed variant is answered, so
         # localization succeeds on the first and fails on the second.
