@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .client import (
     CachingClient,
@@ -216,6 +217,20 @@ class AnthropicClient(CachingClient):
         return self.cached(key, lambda: self._message(prompt, None, max_tokens))
 
 
+def _is_rate_limit(error: Exception) -> bool:
+    """Return True when a provider exception is a throttle worth waiting out.
+
+    Matched structurally rather than by importing litellm's exception types,
+    because this module is importable without litellm installed and the native
+    clients below must keep working in that case.
+    """
+    if type(error).__name__ == "RateLimitError":
+        return True
+    if getattr(error, "status_code", None) == 429:
+        return True
+    return "429" in str(error) and "rate" in str(error).lower()
+
+
 @dataclass
 class LiteLLMClient(CachingClient):
     """The default client: every model call in the package goes through LiteLLM.
@@ -245,6 +260,19 @@ class LiteLLMClient(CachingClient):
             for 0 nearly everywhere, so sending it turns every call into a 400.
         extra: Additional keyword arguments forwarded to `litellm.completion`
             verbatim, for provider-specific parameters this class does not model.
+        max_attempts: How many times one request may be sent before giving up.
+            Only rate limits are retried: a 400 is a bug in the request and
+            resending it is just more traffic against the same endpoint. Six
+            rather than four because four carried a NIM repair from its old
+            failure point of 5 calls to 23 of ~25 and then ran out; the waits
+            are 2/4/8/16/32s, so the last two are what a sustained throttle
+            actually needs.
+        backoff_base: Seconds before the first retry, doubling thereafter. A
+            repair is a 23-26 call burst and free tiers throttle inside a single
+            one, so the console's first interesting query dies mid-repair
+            without this -- passthrough turns are two calls and never hit it.
+        sleep: How to wait between attempts. Injected in tests, which must not
+            actually sleep.
         reasoning_headroom: Extra `max_tokens` granted on every call, for models
             that cannot be stopped from reasoning. `max_tokens` caps reasoning
             *and* content together, and this package asks for budgets as small
@@ -261,6 +289,9 @@ class LiteLLMClient(CachingClient):
     send_temperature: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
     reasoning_headroom: int = 0
+    max_attempts: int = 6
+    backoff_base: float = 2.0
+    sleep: Callable[[float], None] = time.sleep
     calls: int = 0
     _cache: Dict[Tuple[str, ...], str] = field(default_factory=dict, repr=False)
 
@@ -288,7 +319,6 @@ class LiteLLMClient(CachingClient):
         one failure a deployer can act on and the sidecar turns it into a 503
         rather than a stack trace.
         """
-        self.calls += 1
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -300,12 +330,29 @@ class LiteLLMClient(CachingClient):
             payload["api_base"] = self.api_base
         if self.send_temperature:
             payload["temperature"] = temperature
-        try:
-            response = self._completion(**payload)
-        except ModelUnavailable:
-            raise
-        except Exception as error:
-            raise ModelUnavailable(f"{self.model} call failed: {error}") from error
+
+        # Every attempt is counted, because every attempt is a request the
+        # provider saw. Reporting one call for three attempts would understate
+        # the cost of exactly the turns that are most expensive.
+        for attempt in range(self.max_attempts):
+            self.calls += 1
+            try:
+                response = self._completion(**payload)
+                break
+            except ModelUnavailable:
+                raise
+            except Exception as error:
+                last = attempt + 1 >= self.max_attempts
+                if last or not _is_rate_limit(error):
+                    raise ModelUnavailable(
+                        f"{self.model} call failed: {error}"
+                    ) from error
+                delay = self.backoff_base * (2 ** attempt)
+                logger.warning(
+                    "%s rate limited (attempt %d/%d); waiting %.1fs",
+                    self.model, attempt + 1, self.max_attempts, delay,
+                )
+                self.sleep(delay)
 
         choices = getattr(response, "choices", None) or []
         if not choices:

@@ -83,6 +83,15 @@ def build_parser() -> argparse.ArgumentParser:
             help="Deployment compliance instruction.",
         )
         sub.add_argument(
+            "--localization-budget", type=int,
+            default=int(_env("AARAMSE_LOCALIZATION_BUDGET", "8")),
+            help="Delta-debugging probes per query (default: 8). The library "
+                 "default is 32, which is a measurement setting; localization "
+                 "dominates a repair's call burst and hosted free tiers "
+                 "throttle inside a single repair at that size. Raising it "
+                 "buys a finer fragment at the cost of latency and quota.",
+        )
+        sub.add_argument(
             "--allow-uncertified", action="store_true",
             default=_env("AARAMSE_ALLOW_UNCERTIFIED", "") == "1",
             help="Run operators that hold no passing certificate. Off by default: "
@@ -122,6 +131,7 @@ def _gateway(args: argparse.Namespace) -> Gateway:
         deployer_name=args.deployer,
         authorisation_ref=args.authorisation_ref,
         audit_path=Path(args.audit),
+        localization_budget=args.localization_budget,
         require_certificates=not args.allow_uncertified,
     ))
 

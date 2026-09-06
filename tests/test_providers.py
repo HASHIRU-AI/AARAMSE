@@ -389,3 +389,73 @@ def test_thinking_can_be_re_enabled_explicitly():
     """A default, not a lock: a caller who wants reasoning traces can have them."""
     client = build_client("qwen3.5:4b", extra={"think": True})
     assert client.extra["think"] is True
+
+
+class _RateLimited(Exception):
+    """Stands in for litellm.RateLimitError, which tests never import."""
+
+    def __init__(self, status_code: int = 429) -> None:
+        super().__init__("429 Too Many Requests")
+        self.status_code = status_code
+
+
+def _flaky(failures: int, slept: list):
+    """Build a client that rate-limits `failures` times, then answers."""
+
+    class Flaky(LiteLLMClient):
+        attempts: int = 0
+
+        def _completion(self, **kwargs: Any) -> Any:
+            type(self).attempts += 1
+            if type(self).attempts <= failures:
+                raise _RateLimited()
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="reply"))]
+            )
+
+    Flaky.attempts = 0
+    return Flaky(model="nvidia_nim/x", sleep=slept.append)
+
+
+def test_rate_limited_calls_are_retried():
+    """A repair is a ~25-call burst; NIM 429s partway through one.
+
+    Without this the first interesting query in the console dies mid-repair,
+    which is the only query a reader cares about.
+    """
+    slept: list = []
+    assert _flaky(2, slept).complete("q") == "reply"
+    assert len(slept) == 2, "expected one wait per rate-limited attempt"
+
+
+def test_backoff_between_retries_grows():
+    """Retrying a throttled endpoint at a fixed interval is just more traffic."""
+    slept: list = []
+    _flaky(2, slept).complete("q")
+    assert slept[1] > slept[0]
+
+
+def test_retries_are_bounded():
+    """A restricted key never recovers; retrying it forever hangs the console."""
+    slept: list = []
+
+    class Always(LiteLLMClient):
+        def _completion(self, **kwargs: Any) -> Any:
+            raise _RateLimited()
+
+    with pytest.raises(ModelUnavailable):
+        Always(model="nvidia_nim/x", sleep=slept.append).complete("q")
+    assert slept, "expected at least one retry before giving up"
+
+
+def test_non_rate_limit_errors_are_not_retried():
+    """A 400 is a bug in the request; waiting and resending cannot fix it."""
+    slept: list = []
+
+    class Broken(LiteLLMClient):
+        def _completion(self, **kwargs: Any) -> Any:
+            raise ValueError("bad request")
+
+    with pytest.raises(ModelUnavailable):
+        Broken(model="nvidia_nim/x", sleep=slept.append).complete("q")
+    assert slept == [], "a non-retryable error must fail immediately"

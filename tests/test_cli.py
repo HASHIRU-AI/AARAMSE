@@ -139,3 +139,27 @@ def test_sigterm_requests_shutdown():
         assert stopping.wait(2.0), "SIGTERM did not request shutdown"
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+def test_localization_budget_defaults_small_for_the_console():
+    """Localization probes dominate a repair's call burst.
+
+    The library default is 32, which is a measurement setting. A hosted free
+    tier throttles inside one repair at that size, so the deployment entry
+    point ships the value examples/serve_demo.py already demo-tuned to.
+    """
+    args = build_parser().parse_args(["serve"])
+    assert args.localization_budget == 8
+
+
+def test_localization_budget_can_be_raised():
+    """A smaller burst buys latency at the cost of a coarser fragment."""
+    args = build_parser().parse_args(["serve", "--localization-budget", "32"])
+    assert args.localization_budget == 32
+
+
+def test_localization_budget_reads_the_environment(monkeypatch):
+    """A container is configured by environment, not by argv."""
+    monkeypatch.setenv("AARAMSE_LOCALIZATION_BUDGET", "16")
+    args = build_parser().parse_args(["repair", "q"])
+    assert args.localization_budget == 16
