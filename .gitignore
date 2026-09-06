@@ -36,6 +36,15 @@ settings.json
 *.key
 credentials.json
 
+# Scratch state for `examples/wildguard_benign.py --resume`. The completed
+# audit artifacts are committed; this is the crash-recovery cache.
+audit/*.partial.jsonl
+
+# The full 1930-item WildGuardMix slice. WildGuardMix is gated under AI2's
+# ImpACT licence, so only the 100-prompt evaluated sample is redistributed
+# here. Regenerate the full corpus with scripts/build_wildguard_benign.py.
+data/wildguard_benign.json
+
 # Raw model completions retained for diagnosis. Hashed into the audit chain,
 # but never committed: they are verbatim answers to prohibited queries.
 audit/*.completions.jsonl

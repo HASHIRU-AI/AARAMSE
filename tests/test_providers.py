@@ -319,6 +319,33 @@ def test_ollama_models_disable_thinking():
     assert build_client("openai:gpt-5").extra == {}
 
 
+def test_nvidia_nim_models_disable_thinking():
+    """Nemotron returns its chain of thought as `content` unless told not to.
+
+    `nvidia/nemotron-3.5-lightning-30b-a3b` answered "Here's a thinking
+    process: 1. **Analyze User Request** ..." to every query, and truncated
+    before reaching an answer at all on a short budget, until this was set.
+    """
+    client = build_client("nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b")
+    assert client.extra["extra_body"]["chat_template_kwargs"] == {"thinking": False}
+
+
+def test_nvidia_nim_thinking_can_be_re_enabled_explicitly():
+    """The default is a default, not a policy."""
+    client = build_client(
+        "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b",
+        extra={"extra_body": {"chat_template_kwargs": {"thinking": True}}},
+    )
+    assert client.extra["extra_body"]["chat_template_kwargs"] == {"thinking": True}
+
+
+def test_non_nim_litellm_routes_are_left_alone():
+    """Only the two providers with a known failure get a reasoning override."""
+    client = build_client("openai:gpt-5")
+    assert "extra_body" not in client.extra
+    assert "think" not in client.extra
+
+
 def test_thinking_can_be_re_enabled_explicitly():
     """A default, not a lock: a caller who wants reasoning traces can have them."""
     client = build_client("qwen3.5:4b", extra={"think": True})

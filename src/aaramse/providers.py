@@ -444,6 +444,19 @@ def build_client(
             extra = dict(kwargs.get("extra") or {})
             extra.setdefault("think", False)
             kwargs["extra"] = extra
+        elif model.startswith("nvidia_nim/"):
+            # Same failure as Ollama's, different switch. Nemotron reasoning
+            # models emit their chain of thought *as* `content` -- duplicated
+            # into `reasoning_content` -- so a short budget buys deliberation
+            # and no answer, and a long one buys an answer wrapped in "Here's a
+            # thinking process:". Either way the refusal detector and the
+            # equivalence judge are reading the model's notes rather than its
+            # reply. NIM takes the switch as a chat-template flag.
+            extra = dict(kwargs.get("extra") or {})
+            body = dict(extra.get("extra_body") or {})
+            body.setdefault("chat_template_kwargs", {"thinking": False})
+            extra["extra_body"] = body
+            kwargs["extra"] = extra
         return LiteLLMClient(model=model, system_prompt=system_prompt, **kwargs)
 
     provider, model = parse_spec(spec)
