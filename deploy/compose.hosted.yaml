@@ -1,0 +1,63 @@
+# Hosted console: the sidecar behind Caddy, on one always-on instance.
+#
+# Differs from the compose file at the repository root in three ways, each for
+# a reason worth stating.
+#
+# There is no ollama service. The hosted pair is reached over the network, so
+# there is nothing local to run and no model weights to store.
+#
+# The sidecar publishes no port. Only Caddy is reachable from outside, so there
+# is no way to bypass authentication by hitting the app directly -- which would
+# otherwise be trivial, since the app itself is unauthenticated by design here.
+#
+# Model swapping is off. The bench writes a submitted key into one process
+# environment shared by every visitor, which is right for a local tool and
+# wrong for a hosted one.
+services:
+  aaramse:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      AARAMSE_MODEL: ${AARAMSE_MODEL:-nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b}
+      AARAMSE_REWRITER_MODEL: ${AARAMSE_REWRITER_MODEL:-meta/muse-spark-1.2}
+      # The bench becomes a shared credential sink the moment more than one
+      # person can reach it.
+      AARAMSE_ALLOW_MODEL_SWAP: "0"
+      AARAMSE_LOCALIZATION_BUDGET: ${AARAMSE_LOCALIZATION_BUDGET:-8}
+      AARAMSE_DEPLOYER: ${AARAMSE_DEPLOYER:-Acme Wealth Ltd}
+      AARAMSE_AUTHORISATION_REF: ${AARAMSE_AUTHORISATION_REF:-FRN-123456}
+      # Provider credentials. These are the deployer's, and every visitor's
+      # turn spends them: a repair is 18-66 model calls.
+      NVIDIA_NIM_API_KEY: ${NVIDIA_NIM_API_KEY:?set NVIDIA_NIM_API_KEY}
+      META_API_KEY: ${META_API_KEY:-}
+    volumes:
+      # The hash chain must outlive the container. Without this the console
+      # would look like it keeps a record and would discard it on every deploy,
+      # which is worse than keeping none.
+      - aaramse-audit:/data
+    restart: unless-stopped
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: "${SITE_ADDRESS:?set SITE_ADDRESS to your reserved IP with .sslip.io appended}"
+      JUDGE_USER: ${JUDGE_USER:-judge}
+      JUDGE_PASSWORD_HASH: "${JUDGE_PASSWORD_HASH:?generate one with caddy hash-password, see deploy/README.md}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - aaramse
+    restart: unless-stopped
+
+volumes:
+  aaramse-audit:
+  caddy-data:
+  caddy-config:

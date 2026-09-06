@@ -249,3 +249,37 @@ def test_swapping_neither_slot_is_refused(service):
     status, body = _swap(service, {})
     assert status == 400
     assert "error" in body
+
+
+def test_model_swap_is_allowed_by_default(service):
+    """The bench is the point of the console when it runs on someone's laptop."""
+    status, _ = _swap(service, {"model": "openai:gpt-5"})
+    assert status == 200
+
+
+def test_model_swap_can_be_refused_for_a_hosted_deployment(service):
+    """A pasted key lands in one shared process environment.
+
+    Locally that is the reader's own machine. Hosted it means one visitor's
+    credential silently serves the next visitor's turns, and anyone who can
+    reach the page can swap the model out from under everyone else.
+    """
+    service.allow_model_swap = False
+    status, body = _swap(service, {"model": "openai:gpt-5"})
+    assert status == 403
+    assert "error" in body
+
+
+def test_refusing_the_swap_leaves_the_gateway_alone(service):
+    """A refused route must not have already changed something."""
+    service.allow_model_swap = False
+    before = service.gateway.config.model
+    _swap(service, {"model": "openai:gpt-5", "api_key": "sk-should-not-be-stored"})
+    assert service.gateway.config.model == before
+
+
+def test_config_advertises_whether_the_bench_is_usable(service):
+    """The page has to know not to offer a form the server will refuse."""
+    service.allow_model_swap = False
+    _, _, body = service.dispatch("GET", "/v1/config", b"", "Bearer secret")
+    assert json.loads(body)["model_swap_allowed"] is False

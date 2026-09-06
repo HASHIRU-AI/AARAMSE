@@ -136,6 +136,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve_cmd = subcommands.add_parser("serve", parents=[common], help="Run the HTTP sidecar.")
     add_gateway_options(serve_cmd)
+    serve_cmd.add_argument(
+        "--model-swap", dest="allow_model_swap",
+        action=argparse.BooleanOptionalAction,
+        default=_env("AARAMSE_ALLOW_MODEL_SWAP", "1") != "0",
+        help="Allow /v1/model to change the model and store a credential "
+             "(default: on). Turn it off when hosting: there is one process "
+             "environment and one gateway, so a key pasted by one visitor "
+             "would serve the next visitor's turns.",
+    )
     serve_cmd.add_argument("--host", default=_env("AARAMSE_HOST", "0.0.0.0"))
     serve_cmd.add_argument("--port", type=int, default=int(_env("AARAMSE_PORT", "8080")))
 
@@ -218,6 +227,7 @@ def _serve(args: argparse.Namespace) -> int:
         )
     server = serve(
         _gateway(args), host=args.host, port=args.port,
+        allow_model_swap=args.allow_model_swap,
     )
 
     stopping = _shutdown_event()

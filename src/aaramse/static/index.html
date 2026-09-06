@@ -353,7 +353,17 @@ fetch('/v1/config').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(c
        'never widen what the deployment will answer. Keys stay in this process.',
        'Applying swaps live and reloads; each downstream model keeps its own',
        'audit chain.'].join(' '), missing);
-  if (missing) $('#bench').hidden = false;
+  // A form the server will refuse is worse than no form: a reader fills it in
+  // and learns the deployment is broken rather than deliberately restricted.
+  if (cfg.model_swap_allowed === false) {
+    $('#model-form').hidden = true;
+    $('#model-chip').title = 'This deployment runs a fixed pair';
+    benchNote('This deployment runs a fixed model pair and does not accept '
+      + 'credentials. Run the console locally to point it at your own model: '
+      + '<b>pip install -e . &amp;&amp; aaramse serve</b>', false);
+  } else if (missing) {
+    $('#bench').hidden = false;
+  }
 }).catch(() => {
   $('#model').textContent = 'unauthenticated or down';
   $('#pulse').className = 'dot down';
