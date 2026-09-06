@@ -38,8 +38,14 @@ sudo usermod -aG docker "$USER" && newgrp docker
 
 ```bash
 git clone https://github.com/HASHIRU-AI/AARAMSE.git
-cd AARAMSE/deploy
+cd AARAMSE
+git checkout fix/serve-shutdown-and-refusal-oracle   # until this is merged
+cd deploy
 ```
+
+The checkout matters: everything in `deploy/`, the model-swap kill switch, and
+the console's four seeds are on that branch. `main` has none of it, and a clone
+without the checkout would build an image whose console cannot be locked down.
 
 Hash the reviewer's password. It is never stored in plaintext and never
 committed:
