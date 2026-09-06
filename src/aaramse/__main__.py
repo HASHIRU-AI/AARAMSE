@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 from types import FrameType
 from typing import Optional, Sequence
@@ -125,6 +126,41 @@ def _gateway(args: argparse.Namespace) -> Gateway:
     ))
 
 
+def _shutdown_event() -> threading.Event:
+    """Install SIGINT/SIGTERM handlers that request shutdown.
+
+    The handler records the request rather than acting on it. Shutting the
+    server down from inside a signal handler means the only evidence that a
+    stop was actually asked for is the handler having run, and `signal.pause()`
+    cannot be trusted to report that -- see `_wait_for_shutdown`.
+    """
+    stopping = threading.Event()
+
+    def stop(signum: int, frame: Optional[FrameType]) -> None:
+        """Record that a shutdown was requested."""
+        logger.info("received signal %s; shutting down", signum)
+        stopping.set()
+
+    for received in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(received, stop)
+    return stopping
+
+
+def _wait_for_shutdown(stopping: threading.Event, poll: float = 1.0) -> None:
+    """Block until shutdown is actually requested.
+
+    This was `signal.pause()`, which returns on *any* interruption rather than
+    only on a handled SIGINT/SIGTERM, and the caller treated one return as a
+    stop request. LiteLLM's lazy first-call import interrupts it within about
+    two seconds, so the sidecar shut itself down on the first turn -- exit code
+    0, no traceback, no log line, which is the worst way for a demo to fail.
+    Waiting on the flag the handler sets is immune: a spurious wakeup resumes
+    the loop, and only a real request ends it.
+    """
+    while not stopping.wait(poll):
+        pass
+
+
 def _serve(args: argparse.Namespace) -> int:
     """Run the sidecar until interrupted."""
     if not os.environ.get(TOKEN_ENV):
@@ -136,18 +172,11 @@ def _serve(args: argparse.Namespace) -> int:
         _gateway(args), host=args.host, port=args.port,
     )
 
-    def stop(signum: int, frame: Optional[FrameType]) -> None:
-        """Shut the server down on SIGTERM/SIGINT so the container exits cleanly."""
-        logger.info("received signal %s; shutting down", signum)
-        server.shutdown()
-
-    for received in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(received, stop)
-
+    stopping = _shutdown_event()
     logger.info("serving on %s:%s", args.host, server.server_address[1])
     try:
-        signal.pause()
-    except (AttributeError, KeyboardInterrupt):  # pragma: no cover - platform dependent
+        _wait_for_shutdown(stopping)
+    except KeyboardInterrupt:  # pragma: no cover - depends on handler timing
         pass
     finally:
         server.shutdown()

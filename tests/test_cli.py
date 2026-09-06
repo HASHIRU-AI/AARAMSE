@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import threading
 
 import pytest
 
-from aaramse.__main__ import build_parser, main
+from aaramse.__main__ import (
+    _shutdown_event,
+    _wait_for_shutdown,
+    build_parser,
+    main,
+)
 
 
 def test_certificates_are_required_by_default():
@@ -89,3 +97,45 @@ def test_log_level_is_absent_when_not_given():
 def test_main_runs_without_an_explicit_log_level(tmp_path, capsys):
     """The resolution path must work, not just the parser."""
     assert main(["report", "--audit", str(tmp_path / "absent.jsonl")]) == 1
+
+
+def test_shutdown_wait_does_not_return_until_requested():
+    """signal.pause() returns on any interruption, so waiting must be a loop.
+
+    LiteLLM's lazy first-call import interrupts pause() within ~2s, which shut
+    the sidecar down on the first turn with exit code 0 and no log line.
+    """
+    stopping = threading.Event()
+    returned = threading.Event()
+
+    def wait() -> None:
+        _wait_for_shutdown(stopping, poll=0.01)
+        returned.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    assert not returned.wait(0.3), "the wait returned without a shutdown request"
+
+
+def test_shutdown_wait_returns_once_requested():
+    """A real SIGINT/SIGTERM must still stop the server promptly."""
+    stopping = threading.Event()
+    returned = threading.Event()
+
+    def wait() -> None:
+        _wait_for_shutdown(stopping, poll=0.01)
+        returned.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    stopping.set()
+    assert returned.wait(2.0), "the wait did not return after shutdown was requested"
+
+
+def test_sigterm_requests_shutdown():
+    """The handler must record the request, not shut the server down inline."""
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        stopping = _shutdown_event()
+        os.kill(os.getpid(), signal.SIGTERM)
+        assert stopping.wait(2.0), "SIGTERM did not request shutdown"
+    finally:
+        signal.signal(signal.SIGTERM, previous)
