@@ -485,3 +485,21 @@ def test_meta_sends_temperature_so_runs_reproduce():
 def test_api_key_env_is_derived_from_the_spec(spec, expected):
     """The console takes a key from a form and has to know where to put it."""
     assert api_key_env_for(spec) == expected
+
+
+def test_nvidia_nim_sends_temperature_so_runs_reproduce():
+    """Without it the provider picks its own default and every run differs.
+
+    The same benign prompt was scored full_refusal by a screening pass and
+    partial_refusal by the console minutes later, which makes a demo a coin
+    flip and an evaluation unrepeatable. NIM is OpenAI-compatible and accepts
+    temperature.
+    """
+    client = build_client("nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b")
+    assert client.send_temperature is True
+
+
+def test_providers_that_reject_temperature_still_omit_it():
+    """The reason the default is off has not gone away."""
+    assert build_client("openai:gpt-5").send_temperature is False
+    assert build_client("anthropic:claude-opus-5").send_temperature is False

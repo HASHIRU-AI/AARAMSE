@@ -535,6 +535,13 @@ def build_client(
             body.setdefault("chat_template_kwargs", {"thinking": False})
             extra["extra_body"] = body
             kwargs["extra"] = extra
+            # NIM is OpenAI-compatible and accepts temperature, unlike the
+            # recent OpenAI and Anthropic models this defaults off for. Without
+            # it the provider picks its own default: the same benign prompt was
+            # scored full_refusal by one pass and partial_refusal minutes later,
+            # which makes a console demo a coin flip and an evaluation
+            # unrepeatable.
+            kwargs.setdefault("send_temperature", True)
         elif model.startswith("meta/"):
             # Muse Spark is a reasoning model too, but the Meta Model API is
             # OpenAI-compatible and takes the standard `reasoning_effort`, so
