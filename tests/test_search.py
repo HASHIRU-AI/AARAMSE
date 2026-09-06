@@ -7,7 +7,7 @@ import pytest
 from aaramse.corpus import SEED_PAIRS
 from aaramse.harm import is_prohibited
 from aaramse.search import RepairSearch, SearchConfig, search_space_size
-from aaramse.types import Decision
+from aaramse.types import Decision, OperatorKind
 
 
 @pytest.mark.parametrize("pair", SEED_PAIRS, ids=lambda p: p.note)
@@ -158,3 +158,33 @@ def test_failure_class_labels_the_three_count_regimes():
     assert SearchDiagnostics(3, 2, ()).failure_class == "model_upheld"
     # a probed refusal dominates even when some candidates were also blocked
     assert SearchDiagnostics(4, 1, ("P: x",)).failure_class == "model_upheld"
+
+
+def test_each_turn_starts_from_a_clean_operator(operators, oracle):
+    """Operators outlive a turn; what they tried during one must not.
+
+    A console rendering the attempt would otherwise show a fragment localized
+    for the previous reader's question.
+    """
+    class Remembering:
+        name = "REMEMBERING"
+        kind = OperatorKind.SUBTRACTIVE
+        invariant = "test double"
+
+        def __init__(self):
+            self.resets = 0
+
+        def reset(self):
+            self.resets += 1
+
+        def applicable(self, text):
+            return False
+
+        def apply(self, text):
+            return None
+
+    op = Remembering()
+    RepairSearch([op], oracle, config=SearchConfig(max_depth=2)).repair(
+        "Should I dump my 401(k) into gold before the crash?"
+    )
+    assert op.resets == 1

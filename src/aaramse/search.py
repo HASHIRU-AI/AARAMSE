@@ -130,6 +130,8 @@ class RepairSearch:
             A RepairResult recording the decision, the program, the refusal
             margin, and the oracle budget consumed.
         """
+        for operator in self.operators:
+            operator.reset()
         counter = CountingOracle(self.oracle) if self.oracle is not None else CountingOracle(
             _NullOracle()
         )

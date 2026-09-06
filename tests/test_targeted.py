@@ -339,3 +339,77 @@ def test_identical_candidates_are_generated_once_each_but_judged_once():
     )
     assert op.apply(PROMPT) is not None
     assert len(judged) == 1
+
+
+REWRITER_REFUSAL = (
+    "I understand you're asking for help rephrasing content to bypass a safety "
+    "filter. I can't help with circumventing safety systems."
+)
+
+
+def test_a_rewriter_that_declines_is_asked_again_neutrally():
+    """FRAGMENT_INSTRUCTION opens by naming a safety filter, and some models read
+    that as a request to help evade one.
+
+    muse-spark-1.2 refused it outright and produced 'statutory definition' the
+    moment the same task was posed without the framing, so the instruction was
+    the obstacle rather than the model.
+    """
+    replies = iter([REWRITER_REFUSAL, "statutory definition"])
+    op = TargetedRepair(
+        refuses=lambda t: "legal definition" in t.lower(),
+        generate=lambda _p: next(replies),
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("What is the legal definition of X?", "legal definition") \
+        == "statutory definition"
+
+
+def test_a_declining_rewriter_is_recorded_as_declining():
+    """It was being reported as 'replacement far longer than fragment'.
+
+    That is the length guard catching a refusal message, which tells a reader
+    the rewrite was too long when in fact no rewrite was ever proposed.
+    """
+    op = TargetedRepair(
+        refuses=lambda t: True,
+        generate=lambda _p: REWRITER_REFUSAL,
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    op._replacement("What is the legal definition of X?", "legal definition")
+    reasons = [reason for _, reason in op.rejected]
+    assert any("declined" in r for r in reasons), reasons
+    assert not any("far longer" in r for r in reasons), reasons
+
+
+def test_a_complying_rewriter_is_only_asked_once():
+    """The neutral retry must not double the cost on models that never refused.
+
+    Every measurement in this repository was taken on such a model, so those
+    runs have to be unchanged.
+    """
+    calls = []
+
+    def generate(_p: str) -> str:
+        calls.append(1)
+        return "statutory definition"
+
+    op = TargetedRepair(
+        refuses=lambda t: True, generate=generate,
+        equivalence=SemanticEquivalence(generate=lambda _: "YES"),
+        config=TargetedConfig(candidates=1),
+    )
+    assert op._replacement("What is the legal definition of X?", "legal definition") \
+        == "statutory definition"
+    assert len(calls) == 1
+
+
+def test_attempts_are_cleared_between_turns():
+    """The operator outlives a turn; its rejection list must not."""
+    op = build(replacement="protect assets lawfully")
+    op.apply(PROMPT)
+    op.reset()
+    assert op.rejected == []
+    assert op.last_localization is None

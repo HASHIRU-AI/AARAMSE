@@ -224,6 +224,11 @@ button.chip:hover{border-color:var(--amber);color:var(--bone)}
 .bench-note{margin:9px 0 0;font-size:11.5px;color:var(--bone-faint);line-height:1.5}
 .bench-note b{color:var(--bone-dim);font-weight:400}
 .bench-note.bad{color:var(--vermilion)}
+.attempt{border-left:2px solid var(--bone-faint);padding:2px 0 2px 11px;margin-bottom:11px}
+.attempt .name{color:var(--bone-dim);font-size:11px;letter-spacing:.09em;font-weight:500}
+.attempt .lost{color:var(--bone-faint);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.rej{font-size:11.5px;color:var(--bone-dim);padding:3px 0;border-bottom:1px dotted var(--rule)}
+.rej b{color:var(--vermilion);font-weight:400}
 </style>
 </head>
 <body>
@@ -531,6 +536,29 @@ function showTrace(turnId){
     (step.dropped || []).forEach(d => rows.push(`<div class="edit">dropped: <s>${esc(d)}</s></div>`));
     if (!rows.length) rows.push('<div class="edit">no declared substitutions</div>');
     sects.push(`<div class="step"><div class="name">${esc(step.operator)}</div>${rows.join('')}</div>`);
+  });
+
+  // Operators that ran and lost. FRAME_ASSERT wins most turns, so without this
+  // the confined rewrite is invisible and the layer looks like a prefix.
+  const won = new Set(t.program || []);
+  (t.attempts || []).forEach(att => {
+    const rows = [];
+    if (att.mrtf) {
+      rows.push(`<div class="edit">minimal refusal-triggering fragment` +
+        (att.localization_probes ? `, found in ${att.localization_probes} probes` : '') +
+        `:<br><span class="mrtf">${esc(att.mrtf)}</span></div>`);
+    }
+    if (att.proposed) {
+      (att.proposed.substitutions || []).forEach(([from, to]) =>
+        rows.push(`<div class="edit"><s>${esc(from)}</s> &rarr; <b>${esc(to)}</b></div>`));
+      rows.push(`<div class="mono-block">${esc(att.proposed.after)}</div>`);
+    }
+    (att.rejected || []).forEach(([text, reason]) =>
+      rows.push(`<div class="rej"><b>${esc(reason)}</b><br>${esc(String(text).slice(0, 160))}</div>`));
+    if (!rows.length) return;
+    const tag = won.has(att.operator) ? '' : '<span class="lost">did not win</span>';
+    sects.push(section('Attempted &mdash; ' + esc(att.operator),
+      `<div class="attempt"><div class="name">${esc(att.operator)} ${tag}</div>${rows.join('')}</div>`));
   });
 
   const a = t.actionability_before || {}, b = t.actionability_after || {};

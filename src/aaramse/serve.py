@@ -33,7 +33,7 @@ from typing import Any, Dict, Optional, Tuple, Type
 from .client import ModelUnavailable
 from .gateway import Gateway
 from .providers import api_key_env_for, litellm_spec
-from .ui import JobStore, baseline_of, console_html, trace_of
+from .ui import JobStore, attempts_of, baseline_of, console_html, trace_of
 
 __all__ = [
     "MAX_BODY_BYTES",
@@ -327,6 +327,9 @@ class GatewayService:
                     audit=audit,
                     elapsed_s=time.monotonic() - started,
                     model_calls=self.gateway.client.calls - calls_at_start,
+                    # Read after the search, while the operators still hold this
+                    # turn's attempt; the next turn resets them.
+                    attempts=attempts_of(self.gateway.operators),
                 )
 
         job = self.jobs.start("chat", query, work, calls_at_start=calls_at_start)
