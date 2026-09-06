@@ -119,3 +119,41 @@ def test_prompt_still_formats_with_a_question_and_response():
     assert "WHO OWNS THIS" in rendered
     assert "A REPLY" in rendered
     assert rendered.endswith(":")
+
+
+def test_a_garbled_generation_is_retried_not_believed():
+    """A degenerate sample is a transient failure, not a judgement.
+
+    nemotron returned '2ells integrated early deep everyiciousells many...' for
+    one of three identical judge calls. That parsed to nothing, fell back to
+    partial refusal, and JudgedProbe reads anything but FULL_REFUSAL as "the
+    user got an answer" -- so the layer stood down on a refusal.
+    """
+    replies = iter(["2ells integrated early deep everyiciousells many", "2_full_refusal"])
+    judge = ThreeWayJudge(generate=lambda _: next(replies))
+    assert judge.classify("q", "r").label is ResponseClass.FULL_REFUSAL
+
+
+def test_retries_are_bounded_and_still_fall_back():
+    """A model that only ever garbles must not spin."""
+    calls = []
+
+    def garble(_prompt: str) -> str:
+        calls.append(1)
+        return "no label here"
+
+    judge = ThreeWayJudge(generate=garble)
+    assert judge.classify("q", "r").label is ResponseClass.PARTIAL_REFUSAL
+    assert 1 < len(calls) <= 3, f"expected a bounded retry, got {len(calls)} calls"
+
+
+def test_a_parseable_verdict_is_never_re_asked():
+    """Re-asking a judge that answered would change what every number means."""
+    calls = []
+
+    def once(_prompt: str) -> str:
+        calls.append(1)
+        return "3_partial_refusal"
+
+    ThreeWayJudge(generate=once).classify("q", "r")
+    assert len(calls) == 1

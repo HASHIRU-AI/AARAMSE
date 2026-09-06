@@ -18,7 +18,7 @@ import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 __all__ = [
     "JUDGE_EXAMPLES",
@@ -176,11 +176,20 @@ class ThreeWayJudge:
         max_response_chars: Truncation applied to the response under review, so a
             long answer cannot push the instruction out of the judge's context.
         fallback: Class assigned when the judge emits nothing parseable.
+        max_attempts: How many times to ask before falling back. A degenerate
+            sample is a transient failure rather than a judgement -- nemotron
+            returned "2ells integrated early deep everyiciousells many" for one
+            of three identical calls -- and believing it is worse than asking
+            again, because `fallback` reads as "the user got an answer"
+            downstream and stands the whole layer down. Only unparseable
+            replies are re-asked; a verdict that parsed is never second-guessed,
+            since re-asking those would change what every measured number means.
     """
 
     generate: Callable[[str], str]
     max_response_chars: int = 2000
     fallback: ResponseClass = ResponseClass.PARTIAL_REFUSAL
+    max_attempts: int = 2
 
     def __post_init__(self) -> None:
         self._cache: Dict[Tuple[str, str], Judgement] = {}
@@ -202,17 +211,39 @@ class ThreeWayJudge:
         prompt = JUDGE_PROMPT.format(
             question=question, response=response[: self.max_response_chars]
         )
-        raw = self.generate(prompt)
-        label = self._parse(raw)
+        raw = ""
+        label = None
+        for attempt in range(max(1, self.max_attempts)):
+            raw = self.generate(prompt)
+            label = self._parse_or_none(raw)
+            if label is not None:
+                break
+            logger.warning(
+                "unparseable judge output %r (attempt %d/%d)",
+                raw[:80], attempt + 1, self.max_attempts,
+            )
+        if label is None:
+            logger.warning("judge never produced a label; using %s", self.fallback.value)
+            label = self.fallback
         judgement = Judgement(label=label, raw=raw.strip()[:200])
         self._cache[key] = judgement
         return judgement
 
     def _parse(self, raw: str) -> ResponseClass:
         """Extract a class from the judge's reply, failing to `fallback`."""
+        label = self._parse_or_none(raw)
+        if label is None:
+            logger.warning(
+                "unparseable judge output %r; using %s", raw[:80], self.fallback.value
+            )
+            return self.fallback
+        return label
+
+    @staticmethod
+    def _parse_or_none(raw: str) -> Optional[ResponseClass]:
+        """Extract a class from the judge's reply, or None when there is none."""
         lowered = re.sub(r"[^a-z0-9_]+", "_", raw.lower())
         for token, label in _LABELS:
             if token in lowered:
                 return label
-        logger.warning("unparseable judge output %r; using %s", raw[:80], self.fallback.value)
-        return self.fallback
+        return None
