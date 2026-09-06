@@ -154,6 +154,11 @@ class GatewayService:
                     "authenticated": self.token is not None,
                     "api_key_env": api_key_env_for(self.gateway.config.model),
                     "credential_present": self._credential_present(),
+                    "rewriter_model": self.gateway.config.rewriter_model,
+                    "rewriter_api_key_env": (
+                        api_key_env_for(self.gateway.config.rewriter_model)
+                        if self.gateway.config.rewriter_model else None
+                    ),
                 })
             if method == "GET" and route == "/v1/report":
                 with self.lock:
@@ -198,36 +203,51 @@ class GatewayService:
         if not isinstance(payload, dict):
             return _json(400, {"error": "body must be a JSON object"})
 
-        model = payload.get("model")
-        if not isinstance(model, str) or not model.strip():
-            return _json(400, {"error": "'model' must be a non-empty string"})
-        try:
-            spec = litellm_spec(model.strip())
-        except ValueError as error:
-            # A bad spec fails here as a sentence, rather than as a 503 on the
-            # reader's next turn with nothing saying which field was wrong.
-            return _json(400, {"error": str(error)})
+        base = self.gateway.config
+        changes: Dict[str, Any] = {}
 
-        key = payload.get("api_key")
-        env = api_key_env_for(spec)
-        if isinstance(key, str) and key.strip() and env:
-            os.environ[env] = key.strip()
+        # Each slot moves on its own. Sending only one leaves the other alone,
+        # so a reader can change the model being repaired without silently
+        # also changing the instrument that repairs it.
+        for field_name, key_name in (("model", "api_key"), ("rewriter_model", "rewriter_api_key")):
+            raw = payload.get(field_name)
+            if raw is None:
+                continue
+            if not isinstance(raw, str) or not raw.strip():
+                return _json(400, {"error": f"'{field_name}' must be a non-empty string"})
+            try:
+                spec = litellm_spec(raw.strip())
+            except ValueError as error:
+                # A bad spec fails here as a sentence, rather than as a 503 on
+                # the reader's next turn with nothing saying which field was wrong.
+                return _json(400, {"error": str(error)})
+            changes[field_name] = spec
+            secret = payload.get(key_name)
+            env = api_key_env_for(spec)
+            if isinstance(secret, str) and secret.strip() and env:
+                os.environ[env] = secret.strip()
+
+        if not changes:
+            return _json(400, {"error": "name at least one of 'model' or 'rewriter_model'"})
 
         with self.lock:
-            base = self.gateway.config
+            spec = changes.get("model", base.model)
             audit = base.audit_path.parent / (
                 f"{base.audit_path.stem}_{_model_slug(spec)}{base.audit_path.suffix}"
             )
-            self.gateway = Gateway.build(replace(base, model=spec, audit_path=audit))
-            # Jobs describe turns taken against the previous model; keeping them
+            self.gateway = Gateway.build(replace(base, audit_path=audit, **changes))
+            # Jobs describe turns taken against the previous pair; keeping them
             # would let the console poll a trace and render it under a heading
-            # naming a model that never produced it.
+            # naming models that never produced it.
             self.jobs = JobStore()
 
-        logger.info("model swapped to %s (credential env: %s)", spec, env or "none")
+        logger.info("models now %s / rewriter %s",
+                    self.gateway.config.model,
+                    self.gateway.config.rewriter_model or "(same)")
         return _json(200, {
-            "model": spec,
-            "api_key_env": env,
+            "model": self.gateway.config.model,
+            "rewriter_model": self.gateway.config.rewriter_model,
+            "api_key_env": api_key_env_for(self.gateway.config.model),
             "credential_present": self._credential_present(),
             "audit_path": str(self.gateway.config.audit_path),
         })

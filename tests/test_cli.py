@@ -188,6 +188,15 @@ def test_answer_verification_reads_the_environment(monkeypatch):
     assert build_parser().parse_args(["repair", "q"]).verify_answers is False
 
 
-def test_default_model_is_the_preloaded_console_model():
-    """The console ships pointed at a model, not at whatever is on localhost."""
-    assert build_parser().parse_args(["serve"]).model == "meta/muse-spark-1.2"
+
+def test_the_console_defaults_to_the_split_pair():
+    """NIM answers and judges; Muse Spark proposes rewrites and scores meaning."""
+    args = build_parser().parse_args(["serve"])
+    assert args.model == "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+    assert args.rewriter_model == "meta/muse-spark-1.2"
+
+
+def test_the_rewriter_can_be_collapsed_onto_the_downstream_model(monkeypatch):
+    """Every measurement in the repo was taken with one model doing both."""
+    monkeypatch.setenv("AARAMSE_REWRITER_MODEL", "")
+    assert build_parser().parse_args(["serve"]).rewriter_model is None

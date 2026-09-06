@@ -225,3 +225,27 @@ def test_swapping_the_model_requires_the_token(service):
     """The swap sets a credential; it is not a public route."""
     status, _, _ = service.dispatch("POST", "/v1/model", b'{"model":"openai:gpt-5"}', None)
     assert status == 401
+
+
+def test_config_reports_both_slots(service):
+    """A reader has to be able to see which model did which job."""
+    _, _, body = service.dispatch("GET", "/v1/config", b"", "Bearer secret")
+    cfg = json.loads(body)
+    assert "rewriter_model" in cfg
+    assert "rewriter_api_key_env" in cfg
+
+
+def test_the_rewriter_slot_can_be_swapped_on_its_own(service):
+    """The two slots are independent; changing one must not move the other."""
+    downstream = service.gateway.config.model
+    status, body = _swap(service, {"rewriter_model": "openai:gpt-5"})
+    assert status == 200
+    assert service.gateway.config.rewriter_model == "openai/gpt-5"
+    assert service.gateway.config.model == downstream
+
+
+def test_swapping_neither_slot_is_refused(service):
+    """An empty form is a mistake, not an instruction."""
+    status, body = _swap(service, {})
+    assert status == 400
+    assert "error" in body

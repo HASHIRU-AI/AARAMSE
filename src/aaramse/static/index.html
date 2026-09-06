@@ -233,19 +233,28 @@ button.chip:hover{border-color:var(--amber);color:var(--bone)}
   <div class="tagline">over-refusal repair &middot; audited</div>
   <div class="spacer"></div>
   <button class="chip" id="model-chip" type="button" title="Change the model or supply a key"><span class="dot" id="pulse"></span><b id="model">connecting</b></button>
+  <div class="chip" id="rewriter-chip">rewriter <b id="rewriter">&mdash;</b></div>
   <div class="chip">operators <b id="ops">&mdash;</b></div>
   <div class="chip">chain <b id="chain">&mdash;</b></div>
 </header>
 
 <div id="bench" hidden>
   <form id="model-form">
-    <label>LiteLLM model id
+    <label>Downstream &mdash; answers and judges
       <input id="m-spec" spellcheck="false" autocomplete="off"
+             placeholder="nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b">
+    </label>
+    <label>its API key
+      <input id="m-key" type="password" autocomplete="off"
+             placeholder="blank keeps the current one">
+    </label>
+    <label>Rewriter &mdash; proposes and scores
+      <input id="r-spec" spellcheck="false" autocomplete="off"
              placeholder="meta/muse-spark-1.2">
     </label>
-    <label>API key
-      <input id="m-key" type="password" autocomplete="off"
-             placeholder="leave blank to keep the current one">
+    <label>its API key
+      <input id="r-key" type="password" autocomplete="off"
+             placeholder="blank keeps the current one">
     </label>
     <button type="submit" id="m-apply">Apply &amp; reload</button>
   </form>
@@ -309,17 +318,26 @@ fetch('/v1/config').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(c
   $('#model').textContent = cfg.model;
   $('#ops').textContent = (cfg.operators || []).length || '0';
   $('#m-spec').value = cfg.model;
+  $('#r-spec').value = cfg.rewriter_model || '';
+  // Naming the same model twice is the single-model setup with extra steps, and
+  // a reader comparing the two would be comparing nothing.
+  const split = cfg.rewriter_model && cfg.rewriter_model !== cfg.model;
+  $('#rewriter').textContent = cfg.rewriter_model
+    ? (split ? cfg.rewriter_model : 'same as downstream')
+    : 'same as downstream';
   // A missing credential is the difference between "this is broken" and "this
   // needs your key", and only one of those is the reader's to fix.
   const missing = cfg.credential_present === false;
   $('#pulse').className = missing ? 'dot down' : 'dot live';
   benchNote(missing
     ? [`No credential found. Set <b>${esc(cfg.api_key_env || 'the provider key')}</b> in the`,
-       'environment, or paste one here \u2014 it stays in this process and is never'
+       'environment, or paste one here \u2014 keys stay in this process and are never'
        + ' written to disk, logged, or sent anywhere but the provider.'].join(' ')
-    : [`Reads its credential from <b>${esc(cfg.api_key_env || 'no key needed')}</b>.`,
-       'Applying swaps the model live and reloads; each model keeps its own audit chain.'
-      ].join(' '), missing);
+    : ['The downstream model answers and decides what counts as a refusal;',
+       'the rewriter only proposes replacements and scores meaning, so it can',
+       'never widen what the deployment will answer. Keys stay in this process.',
+       'Applying swaps live and reloads; each downstream model keeps its own',
+       'audit chain.'].join(' '), missing);
   if (missing) $('#bench').hidden = false;
 }).catch(() => {
   $('#model').textContent = 'unauthenticated or down';
@@ -347,15 +365,21 @@ $('#model-form').addEventListener('submit', async e => {
   $('#m-apply').disabled = true;
   benchNote('Applying\u2026', false);
   try {
+    const body = {model};
+    if (key) body.api_key = key;
+    const rewriter = $('#r-spec').value.trim();
+    if (rewriter) body.rewriter_model = rewriter;
+    const rkey = $('#r-key').value;
+    if (rkey) body.rewriter_api_key = rkey;
     const res = await fetch('/v1/model', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(key ? {model, api_key: key} : {model})
+      body: JSON.stringify(body)
     });
     const out = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(out.error || `server said ${res.status}`);
     // Reload rather than patch the page: the transcript above belongs to the
     // model that produced it, and re-labelling it would be a lie.
-    $('#m-key').value = '';
+    $('#m-key').value = ''; $('#r-key').value = '';
     location.reload();
   } catch (err) {
     benchNote(esc(err.message), true);

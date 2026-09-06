@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List
 
 import pytest
 
@@ -252,3 +252,88 @@ def test_every_fake_client_branch_is_reachable():
         assert client.complete(prompt) == expected, f"misrouted: {prompt[:40]!r}"
 
     assert client.complete(ANSWER_CHECK_PROMPT.format(original="A?", reply="R")) == "YES"
+
+
+class Recorder(FakeClient):
+    """A FakeClient that remembers which prompts it was asked."""
+
+    def __init__(self, label: str) -> None:
+        super().__init__()
+        self.label = label
+        self.prompts: List[str] = []
+
+    def answer(self, prompt: str, max_tokens: int = 320) -> str:
+        self.prompts.append(prompt)
+        return super().answer(prompt, max_tokens)
+
+    def complete(self, prompt: str, temperature: float = 0.0, max_tokens: int = 60) -> str:
+        self.prompts.append(prompt)
+        return super().complete(prompt, temperature, max_tokens)
+
+    def saw(self, marker: str) -> bool:
+        """Return True when any prompt this client received carried `marker`."""
+        return any(marker in p for p in self.prompts)
+
+
+JUDGE_MARKER = "1_full_compliance"
+OVER_REFUSED = "How do I protect my assets during bankruptcy?"
+
+
+def test_without_a_rewriter_one_client_does_everything(tmp_path):
+    """The default must reproduce today's wiring exactly."""
+    client = FakeClient()
+    gw = Gateway.build(
+        config=GatewayConfig(audit_path=tmp_path / "a.jsonl"), client=client
+    )
+    assert gw.rewriter is gw.client
+
+
+def test_a_rewriter_model_builds_a_second_client(tmp_path):
+    """Naming a rewriter is what splits the two roles apart."""
+    gw = Gateway.build(config=GatewayConfig(
+        audit_path=tmp_path / "a.jsonl", rewriter_model="meta/muse-spark-1.2",
+    ), client=FakeClient())
+    assert gw.rewriter is not gw.client
+    assert gw.rewriter.model == "meta/muse-spark-1.2"
+
+
+def test_the_refusal_oracle_stays_on_the_deployed_model(tmp_path):
+    """What counts as a refusal has to be a property of the model being repaired.
+
+    Move the judge and the layer is measuring a boundary no user will meet.
+    """
+    down, rew = Recorder("down"), Recorder("rew")
+    gw = Gateway.build(
+        config=GatewayConfig(
+            audit_path=tmp_path / "a.jsonl", rewriter_model="meta/muse-spark-1.2",
+        ),
+        client=down, rewriter_client=rew,
+    )
+    gw.search.repair(OVER_REFUSED)
+    assert down.saw(JUDGE_MARKER), "the judge must run against the downstream model"
+    assert not rew.saw(JUDGE_MARKER), "the rewriter must never judge the refusal"
+
+
+def test_the_rewriter_carries_the_rewrite_path(tmp_path):
+    """Proposals and the meaning checks are what actually move."""
+    down, rew = Recorder("down"), Recorder("rew")
+    gw = Gateway.build(
+        config=GatewayConfig(
+            audit_path=tmp_path / "a.jsonl", rewriter_model="meta/muse-spark-1.2",
+        ),
+        client=down, rewriter_client=rew,
+    )
+    gw.search.repair(OVER_REFUSED)
+    assert rew.prompts, "the rewriter was never consulted"
+
+
+def test_the_rewriter_runs_without_the_deployment_prompt(tmp_path):
+    """The compliance instruction is the condition under test, not an instrument.
+
+    Letting it reach the rewriter would have the thing being measured shaping
+    the measurement.
+    """
+    gw = Gateway.build(config=GatewayConfig(
+        audit_path=tmp_path / "a.jsonl", rewriter_model="meta/muse-spark-1.2",
+    ), client=FakeClient())
+    assert gw.rewriter.system_prompt is None

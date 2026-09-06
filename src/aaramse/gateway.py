@@ -80,6 +80,19 @@ class GatewayConfig:
     Attributes:
         model: Model spec the agent runs on: "openai:gpt-5",
             "anthropic:claude-opus-5", or a bare Ollama tag.
+        rewriter_model: Model that proposes fragment replacements and scores
+            meaning. None keeps everything on `model`, which is what every
+            measurement in this repository was taken with.
+
+            When set, the split is deliberate and one-sided. The rewrite path
+            -- fragment proposals, semantic equivalence, meaning fidelity --
+            moves; the three-way judge does not. What counts as a refusal has
+            to be a property of the model being repaired, so moving the judge
+            would measure a boundary no user of that deployment will ever meet.
+            The rewriter also runs without the deployment system prompt: the
+            compliance instruction is the condition under test, and letting it
+            reach an instrument would have the thing being measured shaping
+            the measurement.
         system_prompt: The deployer's compliance instruction.
         deployer_name: Authorised firm operating the gateway.
         authorisation_ref: That firm's regulatory reference.
@@ -101,6 +114,7 @@ class GatewayConfig:
     """
 
     model: str = "gemma4:12b"
+    rewriter_model: Optional[str] = None
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     deployer_name: str = "Acme Wealth Ltd"
     authorisation_ref: str = "FRN-123456"
@@ -121,6 +135,7 @@ class Gateway:
 
     config: GatewayConfig
     client: ModelClient
+    rewriter: ModelClient
     probe: JudgedProbe
     operators: Sequence[RewriteOperator]
     search: RepairSearch
@@ -132,26 +147,43 @@ class Gateway:
         cls,
         config: Optional[GatewayConfig] = None,
         client: Optional[ModelClient] = None,
+        rewriter_client: Optional[ModelClient] = None,
     ) -> "Gateway":
         """Assemble a gateway from configuration.
 
         Args:
             config: Deployment settings.
             client: Model client; injected in tests, built from config otherwise.
+            rewriter_client: Client for the rewrite path. Injected in tests;
+                built from `config.rewriter_model` otherwise, and falling back
+                to `client` when no rewriter is configured.
         """
         config = config or GatewayConfig()
         client = client or build_client(
             config.model, system_prompt=config.system_prompt
         )
+        # No system prompt on the rewriter: it is an instrument, not a
+        # deployment. `complete` never carries one anyway, and passing it here
+        # would leak the compliance condition into the thing measuring it.
+        if rewriter_client is None:
+            rewriter_client = (
+                build_client(config.rewriter_model)
+                if config.rewriter_model else client
+            )
+        # The judge is the refusal oracle and stays on the deployed model.
         judge = ThreeWayJudge(generate=lambda p: client.complete(p, 0.0, 24))
         probe = JudgedProbe(client=client, judge=judge)
-        equivalence = SemanticEquivalence(generate=lambda p: client.complete(p, 0.0, 8))
-        fidelity = MeaningFidelity(generate=lambda p: client.complete(p, 0.0, 16))
+        equivalence = SemanticEquivalence(
+            generate=lambda p: rewriter_client.complete(p, 0.0, 8)
+        )
+        fidelity = MeaningFidelity(
+            generate=lambda p: rewriter_client.complete(p, 0.0, 16)
+        )
 
         operators: List[RewriteOperator] = [
             TargetedRepair(
                 refuses=probe.refuses,
-                generate=lambda p: client.complete(p, 0.0, 40),
+                generate=lambda p: rewriter_client.complete(p, 0.0, 40),
                 equivalence=equivalence,
                 fidelity=fidelity,
                 config=TargetedConfig(
@@ -167,13 +199,16 @@ class Gateway:
             probe=probe,
             config=SearchConfig(max_depth=config.max_depth, max_oracle_calls=64),
             answer_check=(
+                # Stays on the downstream model with the judge: it rules on
+                # what that model said, so it is part of the oracle rather than
+                # part of the rewrite path.
                 AnswerCheck(generate=lambda p: client.complete(p, 0.0, 8))
                 if config.verify_answers
                 else None
             ),
         )
         return cls(
-            config=config, client=client, probe=probe,
+            config=config, client=client, rewriter=rewriter_client, probe=probe,
             operators=operators, search=search, audit=audit,
         )
 

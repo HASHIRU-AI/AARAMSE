@@ -63,8 +63,18 @@ def build_parser() -> argparse.ArgumentParser:
     def add_gateway_options(sub: argparse.ArgumentParser) -> None:
         """Options shared by every subcommand that builds a gateway."""
         sub.add_argument(
-            "--model", default=_env("AARAMSE_MODEL", "meta/muse-spark-1.2"),
+            "--model",
+            default=_env("AARAMSE_MODEL", "nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b"),
             help='Model spec: "openai:gpt-5", "anthropic:claude-opus-5", or an Ollama tag.',
+        )
+        sub.add_argument(
+            "--rewriter-model",
+            default=_env("AARAMSE_REWRITER_MODEL", "meta/muse-spark-1.2") or None,
+            help="Model that proposes fragment replacements and scores meaning. "
+                 "The three-way judge stays on --model regardless: what counts "
+                 "as a refusal has to be a property of the model being "
+                 "repaired. Set to empty to put everything on one model, which "
+                 "is how every measurement in this repository was taken.",
         )
         sub.add_argument(
             "--audit", default=_env("AARAMSE_AUDIT_PATH", "audit/gateway.jsonl"),
@@ -138,6 +148,7 @@ def _gateway(args: argparse.Namespace) -> Gateway:
     """Build a gateway from parsed arguments."""
     return Gateway.build(GatewayConfig(
         model=args.model,
+        rewriter_model=args.rewriter_model or None,
         system_prompt=args.system_prompt,
         deployer_name=args.deployer,
         authorisation_ref=args.authorisation_ref,
