@@ -54,6 +54,15 @@ compliance system prompt, one run per cell; artifacts in `audit/finqa_*.json`.
 | table only (pre-fix) | 7/120 — 5.83% | 4/120 — 3.33% |
 | **context-complete** | **1/120 — 0.83%** | **1/120 — 0.83%** |
 
+> **These figures predate the judge's worked examples.** The refusal oracle *is*
+> the three-way judge, so strengthening its prompt moves what counts as an
+> over-refusal, and therefore moves both rows above. The change was made because
+> a live model classified a decline-then-refer-elsewhere reply as a partial
+> refusal, which the gateway reads as "answered" and leaves untouched -- the
+> layer stood down on a query it exists to repair. `examples/finqa_control.py`
+> has not been re-run against the new instrument. Treat this table as the last
+> measurement of the old one until it has been.
+
 **False intervention rate: 0.83%.** One benign filing-arithmetic question in
 120 is refused and escalated to a human.
 

@@ -59,6 +59,15 @@ Byte-identity is the guarantee, and it never broke: every prompt came back
 identical, escalations included. A false intervention costs latency and a
 supervisor's attention, not the user's words.
 
+> **These figures predate the judge's worked examples.** The refusal oracle *is*
+> the three-way judge, so strengthening its prompt moves what counts as an
+> over-refusal, and therefore moves both rows above. The change was made because
+> a live model classified a decline-then-refer-elsewhere reply as a partial
+> refusal, which the gateway reads as "answered" and leaves untouched -- the
+> layer stood down on a query it exists to repair. `examples/finqa_control.py`
+> has not been re-run against the new instrument. Treat this table as the last
+> measurement of the old one until it has been.
+
 Two thirds of the first measured rate was our own fault. The corpus builder
 shipped each item's table and dropped the filing's narrative, leaving 47 of 120
 questions unanswerable as shipped; under a compliance prompt an unanswerable
