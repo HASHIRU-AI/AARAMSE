@@ -92,6 +92,17 @@ def build_parser() -> argparse.ArgumentParser:
                  "buys a finer fragment at the cost of latency and quota.",
         )
         sub.add_argument(
+            "--verify-answers", dest="verify_answers",
+            action=argparse.BooleanOptionalAction,
+            default=_env("AARAMSE_VERIFY_ANSWERS", "1") != "0",
+            help="Check that the reply to a repaired query still answers the "
+                 "question the user asked, and escalate when it does not "
+                 "(default: on). Off in the library, because it turns repairs "
+                 "into escalations and so moves the recovery rate; on here, "
+                 "because a repair whose reply is still a refusal is not a "
+                 "repair and must not be logged as one.",
+        )
+        sub.add_argument(
             "--allow-uncertified", action="store_true",
             default=_env("AARAMSE_ALLOW_UNCERTIFIED", "") == "1",
             help="Run operators that hold no passing certificate. Off by default: "
@@ -132,6 +143,7 @@ def _gateway(args: argparse.Namespace) -> Gateway:
         authorisation_ref=args.authorisation_ref,
         audit_path=Path(args.audit),
         localization_budget=args.localization_budget,
+        verify_answers=args.verify_answers,
         require_certificates=not args.allow_uncertified,
     ))
 

@@ -163,3 +163,26 @@ def test_localization_budget_reads_the_environment(monkeypatch):
     monkeypatch.setenv("AARAMSE_LOCALIZATION_BUDGET", "16")
     args = build_parser().parse_args(["repair", "q"])
     assert args.localization_budget == 16
+
+
+def test_answer_verification_is_on_for_deployment():
+    """A repair the user cannot read is not a repair.
+
+    FRAME_ASSERT cleared a prohibited query on one judge sample and the turn
+    was logged `repaired`, while the reply the user received was still a
+    refusal. AnswerCheck reads what the user would actually get, and returned
+    False on that exact pair.
+    """
+    assert build_parser().parse_args(["serve"]).verify_answers is True
+
+
+def test_answer_verification_can_be_turned_off():
+    """It moves the recovery rate, so an evaluation must be able to opt out."""
+    args = build_parser().parse_args(["serve", "--no-verify-answers"])
+    assert args.verify_answers is False
+
+
+def test_answer_verification_reads_the_environment(monkeypatch):
+    """A container is configured by environment, not by argv."""
+    monkeypatch.setenv("AARAMSE_VERIFY_ANSWERS", "0")
+    assert build_parser().parse_args(["repair", "q"]).verify_answers is False
