@@ -48,3 +48,6 @@ data/wildguard_benign.json
 # Raw model completions retained for diagnosis. Hashed into the audit chain,
 # but never committed: they are verbatim answers to prohibited queries.
 audit/*.completions.jsonl
+
+# Deployment cheat sheet: holds the judge password and provider keys.
+deploy/DEPLOY-NOTES.txt

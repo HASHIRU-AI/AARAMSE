@@ -213,3 +213,19 @@ def test_the_rewriter_can_be_collapsed_onto_the_downstream_model(monkeypatch):
     """Every measurement in the repo was taken with one model doing both."""
     monkeypatch.setenv("AARAMSE_REWRITER_MODEL", "")
     assert build_parser().parse_args(["serve"]).rewriter_model is None
+
+
+def test_model_swap_is_on_by_default():
+    """The console is a local tool unless someone says otherwise."""
+    assert build_parser().parse_args(["serve"]).allow_model_swap is True
+
+
+def test_model_swap_can_be_turned_off_for_hosting():
+    """Hosting is the case where the bench becomes a shared credential sink."""
+    assert build_parser().parse_args(["serve", "--no-model-swap"]).allow_model_swap is False
+
+
+def test_model_swap_reads_the_environment(monkeypatch):
+    """A container is configured by environment, not by argv."""
+    monkeypatch.setenv("AARAMSE_ALLOW_MODEL_SWAP", "0")
+    assert build_parser().parse_args(["serve"]).allow_model_swap is False

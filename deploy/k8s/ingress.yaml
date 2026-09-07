@@ -1,0 +1,40 @@
+# Public entry point, and where the login lives.
+#
+# The console sends no Authorization header on its calls to /v1/*, so the app's
+# own AARAMSE_API_TOKEN would serve a page that cannot talk to its backend.
+# Basic auth at the ingress avoids that entirely: the browser attaches
+# credentials to every request, page load and poll alike, and not one line of
+# the page changes.
+#
+# Annotations below are nginx-ingress. If the sandpit runs Traefik, HAProxy or
+# an AWS ALB controller, the mechanism is the same but the annotation names are
+# not -- check `kubectl get ingressclass` before applying.
+#
+# Two values must be filled in for the environment:
+#   HOST_PLACEHOLDER   the hostname judges will visit
+#   the ingressClassName, if the cluster has no default
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aaramse
+  annotations:
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: aaramse-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "AARAMSE console"
+    # A repair is minutes of work, but no single request is: the browser gets a
+    # job id immediately and polls. These cover a poll generously.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+spec:
+  # ingressClassName: nginx
+  rules:
+    - host: HOST_PLACEHOLDER
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: aaramse
+                port:
+                  name: http

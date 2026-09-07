@@ -1,0 +1,44 @@
+# Public entry point for the hosted console.
+#
+# Caddy does two jobs here, and the second is the interesting one.
+#
+# TLS: `SITE_ADDRESS` is a hostname like 203.0.113.10.sslip.io, which resolves
+# to the address embedded in it. That is what makes a stable HTTPS URL possible
+# without owning a domain -- Let's Encrypt will issue for it, and Caddy renews
+# on its own.
+#
+# Authentication: the console page sends no Authorization header on its calls
+# to /v1/*, so setting AARAMSE_API_TOKEN would serve a page that cannot talk to
+# its own backend. Basic auth at the edge sidesteps that entirely: the browser
+# attaches credentials to every request once, including the page load and every
+# poll, so the whole surface is protected and not one line of the page changes.
+#
+# The password never appears here. Caddy takes a bcrypt hash, and the hash
+# arrives from the environment, so this file is safe to commit and the secret
+# lives only in the .env beside it.
+{$SITE_ADDRESS} {
+	basic_auth {
+		{$JUDGE_USER} {$JUDGE_PASSWORD_HASH}
+	}
+
+	# A repair is 90-320 seconds of work, but no single request is: the browser
+	# is given a job id immediately and polls for it. These timeouts are
+	# generous for a poll rather than sized for a repair, which is the whole
+	# reason the job model was worth having.
+	reverse_proxy aaramse:8080 {
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+		}
+	}
+
+	encode gzip
+
+	log {
+		# Query text is posted in request bodies, which are not logged; keep it
+		# that way. The audit chain is where a query is meant to be recorded,
+		# deliberately and hash-linked, not scattered through a proxy log.
+		output stdout
+		format console
+	}
+}

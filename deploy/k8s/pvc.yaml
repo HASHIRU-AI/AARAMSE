@@ -1,0 +1,19 @@
+# The hash chain has to outlive the pod.
+#
+# ReadWriteOnce is correct rather than a limitation: exactly one writer is the
+# invariant, and a volume that cannot be mounted twice is a second line of
+# defence behind `strategy: Recreate`.
+#
+# storageClassName is left unset so the cluster's default is used. If the
+# sandpit has no default class the claim will sit Pending -- set it explicitly
+# then, from `kubectl get storageclass`.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aaramse-audit
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi

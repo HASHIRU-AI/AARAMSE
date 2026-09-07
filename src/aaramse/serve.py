@@ -83,6 +83,12 @@ class GatewayService:
         gateway: The configured repair layer.
         token: Bearer token required on every non-health request. None means
             the service is unauthenticated, which is logged as a warning.
+        allow_model_swap: Whether `/v1/model` may change the model or store a
+            credential. True suits the local tool this console is: the key is
+            the reader's own and the process is theirs. A hosted deployment
+            must set it False, because there is one process environment and one
+            gateway, so a key pasted by one visitor would serve the next
+            visitor's turns and a swap would move the model for everyone.
         lock: Serialises handling so the audit chain cannot interleave.
         jobs: Background work the console polls on, because a repair can take
             minutes and does not fit behind a synchronous request.
@@ -90,6 +96,7 @@ class GatewayService:
 
     gateway: Gateway
     token: Optional[str] = None
+    allow_model_swap: bool = True
     lock: threading.Lock = field(default_factory=threading.Lock)
     jobs: JobStore = field(default_factory=JobStore)
 
@@ -139,6 +146,10 @@ class GatewayService:
             if method == "GET" and route.startswith("/v1/chat/"):
                 return self._chat_poll(route.rsplit("/", 1)[-1])
             if method == "POST" and route == "/v1/model":
+                if not self.allow_model_swap:
+                    return _json(403, {
+                        "error": "model swapping is disabled on this deployment",
+                    })
                 return self._swap_model(body)
             if method == "GET" and route == "/v1/config":
                 return _json(200, {
@@ -154,6 +165,7 @@ class GatewayService:
                     "authenticated": self.token is not None,
                     "api_key_env": api_key_env_for(self.gateway.config.model),
                     "credential_present": self._credential_present(),
+                    "model_swap_allowed": self.allow_model_swap,
                     "rewriter_model": self.gateway.config.rewriter_model,
                     "rewriter_api_key_env": (
                         api_key_env_for(self.gateway.config.rewriter_model)
@@ -393,6 +405,7 @@ def serve(
     host: str = "0.0.0.0",
     port: int = 8080,
     token: Optional[str] = None,
+    allow_model_swap: bool = True,
 ) -> ThreadingHTTPServer:
     """Build and start an HTTP server in the background.
 
@@ -401,6 +414,8 @@ def serve(
         host: Interface to bind.
         port: Port to bind; 0 selects a free one.
         token: Bearer token to require. Falls back to `AARAMSE_API_TOKEN`.
+        allow_model_swap: Whether `/v1/model` may change the model or store a
+            credential. Set False when hosting; see `GatewayService`.
 
     Returns:
         The running server. Call `shutdown()` to stop it.
@@ -408,6 +423,7 @@ def serve(
     service = GatewayService(
         gateway=gateway,
         token=token or os.environ.get(TOKEN_ENV) or None,
+        allow_model_swap=allow_model_swap,
     )
     server = ThreadingHTTPServer((host, port), build_handler(service))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
