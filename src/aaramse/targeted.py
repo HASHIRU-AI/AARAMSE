@@ -1,13 +1,21 @@
 """Targeted repair: rewrite only the localized trigger, splice it back in.
 
-DDOR instructs a rewriting model to confine its edits to the localized mRTF and
-leave the rest of the prompt alone. Instruction is not enforcement -- a model
-asked to touch only part of a sentence frequently rewrites the whole thing.
+Implements **structural confinement** to safely repair over-refusals.
 
-Here confinement is structural. The model is asked for a replacement *for the
-fragment only*, and the substitution is performed in code. Everything outside
-the mRTF is byte-identical by construction, and the audit record carries the
-exact (fragment -> replacement) pairs rather than two whole prompts to diff.
+In other systems (such as standard DDOR), an LLM is prompted to edit only a localized
+fragment and leave the rest of the text alone. However, instruction is not enforcement:
+an LLM asked to modify only one phrase often subtly alters or hallucinates words
+throughout the entire sentence.
+
+Here, confinement is enforced strictly in software:
+1. The model is asked only to propose a replacement phrase for the isolated
+   minimal Refusal-Triggering Fragment (mRTF).
+2. The substitution is performed programmatically in Python code.
+3. Every character outside the localized fragment is guaranteed to remain
+   **100% byte-identical**.
+
+The resulting audit record logs the explicit `(fragment -> replacement)` pair,
+enabling direct inspection rather than requiring diffs of long prompt strings.
 """
 
 from __future__ import annotations
@@ -34,6 +42,15 @@ __all__ = [
     "TargetedConfig",
     "TargetedRepair",
 ]
+
+# A replacement is spliced into a customer's question, so it has to read as one.
+# Anything outside this set is rewriter formatting -- markdown emphasis, table
+# pipes, code fencing -- rather than a phrase, and splicing it produces text that
+# stops the model refusing only because it stops being a question at all.
+# Both apostrophes are listed on purpose: U+2019 is what several rewriters emit,
+# and this project has already been bitten once by matching only the ASCII form
+# (see TestTypographicApostrophes in tests/test_content_gate.py).
+_WELL_FORMED_RE = re.compile(r"^[A-Za-z0-9\s\-'’,.()%$&:;?!/]+$")  # noqa: RUF001
 
 logger = logging.getLogger(__name__)
 
@@ -427,6 +444,16 @@ class TargetedRepair(RewriteOperator):
                     raw.strip()[:120] or "(empty)",
                     "replacement empty or unchanged from the fragment",
                 ))
+                continue
+            if not _WELL_FORMED_RE.match(replacement):
+                # `market*valuation`, proposed for the fragment "fair" on the
+                # FinQA control slice, cleared every other guard and turned
+                # "grant-date fair value" into something no reader could parse.
+                # A replacement is a phrase a customer could have typed; markup
+                # characters mean the rewriter emitted formatting, not English.
+                self.rejected.append(
+                    (replacement, "replacement is not a well-formed phrase")
+                )
                 continue
             cap = max(3, len(fragment.split()) * self._config.max_replacement_ratio)
             if len(replacement.split()) > cap:
