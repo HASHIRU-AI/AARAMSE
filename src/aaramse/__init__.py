@@ -1,9 +1,14 @@
-"""AARAMSE rewrite stage: a monotone pragmatic rewrite calculus.
+"""AARAMSE: Auditable over-refusal repair for regulated AI advice.
 
-Repairs over-refusal without becoming a jailbreak primitive. Rewrites are
-programs over a closed, certified operator algebra that can only move a query
-upward on an actionability lattice, so the worst case is that a user receives
-general financial education instead of personalised advice.
+Repairs over-refusals (when a model mistakenly declines harmless questions)
+without turning into a jailbreak tool.
+
+Rewrites are strictly bounded programs over a closed operator algebra (a
+predefined, fixed set of safe rewrite actions) that move queries upward on an
+actionability lattice (a rule-based hierarchy that ensures queries remain
+educational rather than soliciting personalized, regulated advice). The worst-case
+outcome is that a user receives general financial education rather than personalized
+advice, while prohibited or harmful queries are escalated to human review.
 """
 
 from .audit import AuditLog

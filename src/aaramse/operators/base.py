@@ -1,9 +1,12 @@
-"""Operator abstraction and registry for the rewrite calculus.
+"""Operator abstraction and registry for safe rewrite actions.
 
-The operator set is closed and enumerable on purpose. Its size and the search
-depth together bound the layer's total optimization power to a number a
-supervisor can read off a compliance document, unlike a free-form paraphraser
-whose search space is unbounded and undocumentable.
+Defines the base interface and registration system for rewrite operators.
+
+The operator set is intentionally **closed and enumerable** (a finite, predefined
+menu of safe actions). By restricting rewrites to a known set of operators and
+enforcing a maximum search depth, the system's search space is strictly bounded
+and inspectable before deployment — unlike open-ended paraphrasers whose behavior
+cannot be bounded or documented for compliance regulators.
 """
 
 from __future__ import annotations

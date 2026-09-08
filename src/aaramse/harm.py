@@ -1,28 +1,22 @@
-"""The harm axis: an admission gate for queries no rewrite may be attempted on.
+"""The harm axis: an admission gate for queries where no rewrite may be attempted.
 
-The actionability lattice in `invariants.py` scores *personalization* -- "my",
-"should I", "how do I", a ticker, an amount. That is the correct sensor for the
-over-refusal this layer repairs, and it is blind by construction to harm that is
-not personalized advice. Measured on the vendored prohibited corpus, 29% of
-items score zero on the lattice, contain no domain term, and match no content
-pattern: every existing guard vacuous at once. Two items from that set reached a
-live model as euphemized rewrites and were answered.
+While the **actionability lattice** (in `invariants.py`) measures personalization
+and directive advice ("should I buy", specific amounts, tickers), it does not catch
+abstract or impersonal harmful requests (e.g. general questions about how money
+laundering or creditor concealment works).
 
-**This is a gate, not a lattice term.** Monotone generalization rejects a
-candidate when actionability *rises*. A euphemism lowers harm -- "phishing
-email" becomes "security training email" -- so folding harm into the monotone
-score would make the euphemism look better and admit it more readily. Harm is
-therefore read once, off the incoming query, before any rewrite is enumerated.
-A query above threshold is escalated and never enters the search.
+The **harm gate** serves as an upfront safety filter:
 
-Scoring is deterministic and rule-based, which is what permits it to block at
-all: in this codebase provable checks may reject and model judgements may only
-rank. A learned harm classifier would put model variance back on the runtime
-safety path.
-
-Patterns were authored against the certification fold of the vendored corpus
-only (`splits.split_items`), so the evaluation fold measures generalization
-rather than memorisation.
+* **Admission gate, not a rewrite scorer:** Euphemisms can make harmful requests
+  sound benign (e.g., rewriting "phishing email" into "security training exercise").
+  Therefore, harm is evaluated once, directly on the raw incoming user query, before
+  any rewrite is attempted. Any query scoring above `PROHIBITED_THRESHOLD` immediately
+  escalates to human review and never enters the repair pipeline.
+* **Deterministic and rule-based:** Uses explicit patterns rather than a machine-learning
+  model to keep runtime safety predictable and fail-closed.
+* **Held-out validation:** Pattern rules were developed only against the training/certification
+  split of the dataset, ensuring evaluation splits measure genuine generalization rather
+  than pattern memorization.
 """
 
 from __future__ import annotations

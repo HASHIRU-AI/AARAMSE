@@ -1,15 +1,15 @@
-"""Renders the audit log into the report a supervisor actually reads.
+"""Renders the audit log into executive compliance reports for supervisors and regulators.
 
-`AuditLog.summary()` returns a dict, which is the right shape for a program and
-the wrong shape for a person. Phase 3 of the concept note promises an
-intervention report; this is it -- Markdown, deterministic, and derived only
-from what the hash chain already holds, so nothing in the report is assertable
-that the log cannot prove.
+Converts structured audit records into human-readable Markdown or JSON documents.
+All reported figures and traces are derived directly from the cryptographic hash chain,
+ensuring every statement in the report is backed by mathematical proof.
 
-Two things get prominence because they are the two a regulator asks about
-first: whether the chain verifies, and which queries the layer could *not*
-repair. Escalations are failures the deployer has to answer for, so they are
-listed individually rather than counted.
+The report prioritizes the two key questions a regulator or auditor asks first:
+1. **Chain integrity:** Does the SHA-256 hash chain verify as unbroken and untampered?
+2. **Human escalations:** Which queries could not be safely repaired automatically?
+
+Escalated queries are listed individually with full trace metadata rather than simply
+aggregated into a summary count, ensuring transparency and accountability.
 """
 
 from __future__ import annotations

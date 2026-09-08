@@ -1,9 +1,11 @@
 """The deployable middleware: one call in, one audited decision out.
 
-Wires the pieces that were previously assembled by hand in every evaluation
-script -- client, three-way judge, operator set, bounded search, certification,
-and the hash-chained audit log -- so there is a single thing to run and a single
-thing to demonstrate.
+Coordinates the entire AARAMSE pipeline through a single unified interface:
+1. Probes the model to determine whether an over-refusal occurred.
+2. If refused, isolates the trigger phrase and searches for the shortest safe repair.
+3. Tests candidates against the model and verifies the resulting answer.
+4. Escalates prohibited or unresolvable questions to human review.
+5. Records the complete decision trace to the tamper-evident, hash-chained audit log.
 """
 
 from __future__ import annotations

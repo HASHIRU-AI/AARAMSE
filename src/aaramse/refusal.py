@@ -1,9 +1,14 @@
-"""Refusal oracles: the boundary the rewriter probes but never modifies.
+"""Refusal oracles: detecting model refusals without internal parameter access.
 
-The middleware is model-agnostic and has no parameter access, so a refusal is
-observed, not introspected. Two implementations are provided: a deterministic
-simulator for offline development and certification, and a thin wrapper around
-any callable that returns model text.
+Because AARAMSE operates as a black-box, model-agnostic middleware layer without
+access to internal model weights or hidden states, model refusals are observed
+directly from generated output text.
+
+This module provides refusal detection oracles:
+1. **Model-backed oracles:** Evaluate live model responses using robust pattern
+   matching and quote normalization (e.g. handling curly apostrophes).
+2. **Deterministic simulators:** Scripted mock oracles for fast, deterministic
+   offline testing and pre-certification without needing live GPU resources.
 """
 
 from __future__ import annotations

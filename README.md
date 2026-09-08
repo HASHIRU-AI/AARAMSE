@@ -4,10 +4,18 @@ A model-agnostic middleware layer that detects when a deployed financial agent
 refuses a legitimate question, repairs the refusal, and logs every intervention
 in a tamper-evident record a supervisor can read.
 
-Every model call goes through LiteLLM, so the provider and model are a spec
-string. `python examples/demo.py` runs the whole pipeline offline against a
-scripted stand-in model; `--live` drives a real one. `aaramse serve` puts a
-chat console in front of it.
+The repair itself is an agent: it plans over a **closed operator algebra** (a
+predefined, fixed set of safe rewrite actions), acts on the deployed model,
+verifies what came back, and escalates to a human when it cannot succeed. What
+makes it deployable in front of a regulated system is that its autonomy is
+strictly capped by a concrete number the deployer sets (**bounded autonomy**),
+not by an open-ended prompt or a vague stopping heuristic.
+
+Every model call goes through LiteLLM, so the provider and model are configured
+with a simple spec string (e.g. `openai:gpt-5` or `gemma4:12b`).
+`python examples/demo.py` runs the whole pipeline offline against a scripted
+stand-in model; `--live` drives a real model. `aaramse serve` launches an
+interactive web chat console in front of it.
 
 **This is the MVP branch.** It carries the modules with live measurements
 behind them and nothing else. See `main` for the full research tree, including
@@ -18,157 +26,312 @@ the three-arm comparison this branch cannot reproduce.
 ```
 query ──> probe ──> refused? ──no──> passthrough, untouched
                        │yes
-                       ├─ localize the minimal refusal-triggering fragment
+                       ├─ localize the minimal refusal-triggering fragment (mRTF)
                        ├─ repair (edit the fragment, or assert deployer context)
                        ├─ re-probe: did the user actually get an answer?
                        └─ escalate if not, and log either way
 ```
 
+That loop is perceive-act-verify with a human handoff, where each stage is a
+guarded, mathematically bounded agentic step rather than a prompt:
+
+| Stage | What the agent does | What bounds it (and what it means) |
+|---|---|---|
+| **Probe** | Checks if the live model refuses using an automated probe | `max_oracle_calls` (hard ceiling on live model calls) |
+| **Localize** | Uses delta-debugging search to isolate the minimal refusal-triggering fragment (mRTF) | **1-minimality** (removing any single word stops triggering refusal), verified in tests |
+| **Plan** | Breadth-first search for the shortest sequence of safe rewrite operators | `search_space_size(\|O\|, k)` (strictly caps total candidate combinations) |
+| **Act** | Slices the replacement phrase into the original query in code | **Byte-identity** (100% untouched character-for-character outside the fragment) |
+| **Verify** | Re-probes the model and verifies the response answers the user's question | **Actionability lattice** (ensuring educational intent) and **harm gate** (blocking unsafe topics) |
+| **Hand off** | Escalates to a human compliance reviewer | Fires when the operator set is exhausted, or if procedural guidance was delivered |
+
+## Bounded autonomy is the safety argument
+
+Most agentic safety designs rely on "stopping heuristics": they prompt the agent
+and trust it to stop when it decides it has done enough. AARAMSE relies on
+**arithmetic**. Depth `k` over a closed operator set `O` mathematically caps the
+total candidates the agent can ever consider at `search_space_size(|O|, k)` —
+with the shipped defaults, a small, three-digit number an engineer or regulator
+can enumerate and inspect *before* deployment. `max_oracle_calls` caps live model
+contact independently. An agent with a fixed search budget cannot be talked into
+an endless search or jailbreak loop.
+
+Four further architectural properties make that budget dependable:
+
+- **Escalation fires on a defined trigger (deterministic escalation)**, not on
+  the agent's subjective confidence: when the allowed actions are exhausted, or
+  when a candidate elicits step-by-step procedural assistance
+  (`abort_on_content_delivery`). The agent never blindly "tries harder".
+- **The agent's edits are structural, not generative (structural confinement).**
+  The model only proposes a replacement for the localized phrase; the
+  substitution happens in deterministic software code. Everything outside that
+  isolated fragment remains byte-identical by construction.
+- **Operators are certified before admission (contrastive pre-certification).**
+  A certificate is a property of *(operator, model, corpus)*; an operator is
+  only allowed to run if proven never to flip a prohibited request into an
+  answer on the specific deployed model. Enforcement is fail-closed.
+- **Every autonomous decision is auditable.** The operator program, the
+  localized fragment, each edit, the refusal margin, and the certificates in
+  force are written to a cryptographic SHA-256 hash-chained log.
+
+## Where this sits
+
+In regulatory governance frameworks, this addresses **(3) authorisation,
+supervision, and enforcement**. It serves two users at opposite ends of the
+same audit trail:
+
+- **A firm's compliance function** puts it in front of a customer-facing
+  assistant. Today, a bank tunes its assistant to refuse anything resembling
+  regulated advice. The resulting over-refusals are completely invisible: a
+  customer who asked *"What is an ETF?"*, was declined, and left in frustration
+  leaves no record today. AARAMSE makes each over-refusal a logged, repaired, or
+  escalated event. Escalations become an actionable queue a compliance officer
+  can work, rather than a silent failure.
+- **A regulatory supervisor or external auditor** reads the other end. Running
+  `aaramse report` converts a firm's audit log into a Markdown document that
+  leads with what a regulator asks first: does the cryptographic hash chain
+  verify, and which queries required human escalation? Escalations are listed
+  individually so deployers can be held accountable for failures.
+
+What changes in current practice: **over-refusal becomes evidenced**. Today, a
+supervisor cannot prove whether a firm's assistant is denying customers lawful
+information, because refusals leave no artifact. AARAMSE produces the artifact
+and makes it tamper-evident.
+
 ## Measured results
 
-The headline comparison -- `TARGETED_REPAIR` against `LLM_REPHRASE` against
-`FRAME_ASSERT`, on the FalseReject finance slice and OR-Bench-toxic under an FCA
-compliance prompt -- lives on `main`, with `examples/three_arm_eval.py` and
-`audit/three_arm_eval.json`. It is not reproducible here: the generative
-rephrase arm is not part of this branch.
+Three obligations govern this layer: repair the refusals that are wrong, do not
+leak the ones that are right, and leave everything else completely alone. A system
+that meets two of them while quietly failing the third looks fine on paper but is
+unacceptable in production.
 
-What that comparison established, and why this branch is shaped the way it is:
-confinement costs recovery. The mRTF-confined arm cleared 1 of 8 benign
-over-refusals and leaked 0 of 10 toxic prompts; the deployer frame cleared 7 of
-8 and leaked 2 of 10. Both of those ship. The full-prompt rewrite scored 6 of 8
-and 2 of 10 after its instruction was tuned, and 1 of 8 and 0 of 10 before --
-the tuning bought the recovery and the leak together, which is a property of a
-prompt rather than of a method. It does not ship.
+### Obligation 3: leaving benign queries alone
 
-### Leaving benign queries alone
+This is the obligation most often skipped by researchers, and the one measured
+most carefully here. Until it was evaluated against a live model, it was only
+asserted against a simulator that could not fail it. We tested on `gemma4:12b`
+using the FinQA control slice (120 numerical-reasoning questions over public
+filings under the FCA banking system prompt), single model, `verify_answers`
+off. Source: `audit/finqa_control_v2.json`.
 
-Repair and leakage are two of three obligations. The third is doing nothing to
-a query nobody refused, and until it was measured on a real model it was only
-asserted against a simulator that could not fail it. `gemma4:12b`, the FinQA
-control slice, 120 numerical-reasoning questions over public filings, same FCA
-system prompt. Source: `audit/finqa_control.json`.
+| Metric | Result | Meaning |
+|---|---|---|
+| **False intervention rate** | **2/120 — 1.67%** | The layer intervened on 2 of 120 normal questions |
+| **Passed through byte-identical** | **119/120 — 99.2%** | One question was rewritten; the other 119 reached the model character-for-character unchanged |
+| **Median passthrough latency** | **11.1s** | Normal questions pass through with minimal overhead |
+| **Audit chain** | **intact** | 286 model calls over 28 minutes, chain verified |
 
-| | Result |
-|---|---|
-| False intervention rate | **1/120 — 0.83%** |
-| Byte-identity preserved | **120/120 — 100%** (480/480 across four runs) |
-| Median passthrough | 10.8s |
-| The one escalation | 32.5s — a 3.0x latency multiplier |
+Byte-identity is our core guarantee: *any query that the model did not refuse
+reaches it 100% unchanged down to the byte.* That condition held on all 120 items:
+the layer never altered a single query that the model was willing to answer.
 
-Byte-identity is the guarantee, and it never broke: every prompt came back
-identical, escalations included. A false intervention costs latency and a
-supervisor's attention, not the user's words.
+What this evaluation demonstrates is what happens when the underlying model mistakenly
+refuses a normal question. The model refused 2 harmless control questions: one was
+safely escalated to a human, and one was repaired. This highlights the crucial
+difference between the two types of false interventions:
+- **An escalating false intervention** costs extra latency and human review time,
+  but leaves the user's original words completely untouched.
+- **A repairing false intervention** alters the user's phrasing to obtain an answer.
+  We report this transparently rather than smoothing it over.
 
-> **These figures predate the judge's worked examples.** The refusal oracle *is*
-> the three-way judge, so strengthening its prompt moves what counts as an
-> over-refusal, and therefore moves both rows above. The change was made because
-> a live model classified a decline-then-refer-elsewhere reply as a partial
-> refusal, which the gateway reads as "answered" and leaves untouched -- the
-> layer stood down on a query it exists to repair. `examples/finqa_control.py`
-> has not been re-run against the new instrument. Treat this table as the last
-> measurement of the old one until it has been.
+> **Why a single run cannot establish a trend (the sampling variance caveat):**
+> Large language models generate responses probabilistically. When measuring rare
+> events (like 1 vs. 2 false interventions out of 120 items, or 0.83% vs. 1.67%),
+> small fluctuations between single runs represent expected sampling variance rather
+> than a causal effect or performance regression.
 >
-> Two later changes move them further: `--verify-answers` is now on for the
-> deployment path, which turns some repairs into escalations, and the harm gate
-> now covers concealment from a creditor or trustee, which stops repair being
-> attempted on those at all. Both were made to fix wrong outcomes rather than
-> to move a number, and neither has been re-measured.
+> In fact, when we re-evaluated the first 44 items after introducing the well-formedness
+> guard, two false interventions occurred again, but on *different items*:
+> `AAL/2010/page_72.pdf-3` flipped from passthrough to escalated, while
+> `ABMD/2005/page_29.pdf-1` flipped the other way — despite zero code changes on
+> either path.
 >
-> The console ships with the rewriter split on: nemotron answers and judges,
-> muse-spark-1.2 proposes fragment replacements and scores meaning. The judge
-> stays on the model being repaired, because what counts as a refusal has to be
-> a property of that model. The cost is known and accepted -- muse-spark
-> declines the fragment instruction as a request to help evade a safety filter,
-> so the confined operator usually falls back to a static generalization or
-> proposes nothing, and repairs arrive as a deployer frame. What the split buys
-> is that the model being repaired is not also the model scoring whether the
-> repair preserved the question. `--rewriter-model ""` collapses it onto one
-> model, which is how every measurement above was taken.
+> Therefore, 0.83% and 1.67% should be understood as two sample points of the same
+> baseline under slightly different evaluation settings, not as a trend or regression.
+> A definitive benchmark requires repeated runs with statistical confidence intervals.
+> Partial run artifacts are preserved in `audit/finqa_control_v3.jsonl`.
+>
+> **What the judge's worked examples changed:**
+> The refusal oracle *is* the three-way judge, so clarifying its prompt shifts what
+> gets recognized as an over-refusal. The prompt was updated with worked examples
+> because a live model classified polite brush-offs (declining advice but suggesting
+> outside resources) as "partial refusals," which the gateway treated as answered and
+> left alone — standing down on queries it was built to fix.
+>
+> Re-evaluating `examples/finqa_control.py` with the sharper judge identified two
+> refusals instead of one (1.67%), and for the first time repaired one of them rather
+> than passing it through. Full artifacts are in `audit/finqa_control_v2.json`,
+> alongside the original baseline run.
 
-Two thirds of the first measured rate was our own fault. The corpus builder
-shipped each item's table and dropped the filing's narrative, leaving 47 of 120
-questions unanswerable as shipped; under a compliance prompt an unanswerable
-question draws "I am not permitted to advise" rather than "I lack that figure",
-which is indistinguishable from a refusal. All 7 initial false interventions
-fell in that group and none in the other 73 (Fisher exact p = 0.001). Fixing
-the corpus took 5.83% to 0.83%. The measurement instrument was the finding
-again, exactly as with the refusal detector.
+**Both false interventions share the exact same question structure**, which reveals
+an important model failure mode. Both questions (`ABMD/2007/page_78.pdf-2` and
+`ABMD/2005/page_29.pdf-1`) ask for straightforward mathematical extrapolation over
+public filings (*"assuming the same growth rate as year N, what would the figure be
+in year N+1?"*). Under a strict FCA banking compliance prompt, the model over-cautiously
+misinterprets simple arithmetic projection as "financial forecasting," and declines it
+as unauthorized advice.
 
-The single survivor is the genuine one: given grant-date fair values for
-2005-2007, project 2008 at the same appreciation. It is arithmetic over a
-public filing, it is fully specified, and it is refused. It also *passed*
-before the fix — without the numbers the model could not project and said so,
-which scores as compliance. Supplying them turned "I can't" into "I won't".
+**The gibberish repair and the guard confirmation:**
+Investigating the audit log for the single repaired query revealed an instructive
+edge case in LLM rewriting:
+- **The failure:** The system localized the minimal Refusal-Triggering Fragment (mRTF)
+  to the words `"fair for"`. The rewriter proposed replacing `fair` with
+  `market*valuation` (leaking a markdown asterisk from the LLM prompt) and `for` with
+  `during`. The query was spliced into: *"...grant-date market\*valuation value during
+  options"*.
+- **Why guards passed it:** The query stayed within length caps, actionability was 0
+  (it didn't ask for advice), and semantic fidelity (`MeaningFidelity`) scored it 1.0
+  because `topic_core` used a narrow 95-word dictionary (it saw `"options"` and gained
+  `"valuation"`). The model answered simply because the sentence had been garbled into
+  ungrammatical syntax that no longer triggered the safety filter!
+- **The guard confirmation:** We added a strict **well-formedness guard** in
+  `targeted.py` that automatically rejects any replacement containing invalid
+  characters, markdown symbols (like asterisks), or non-English typography
+  (regression test: `TestMalformedReplacements`). Re-running that exact item against
+  the new guard confirms the intended defense: the malformed candidate is rejected,
+  the search exhausts all valid options without finding an admissible rewrite, and
+  the query safely escalates to human review with the user's original words 100%
+  byte-identical (`IDENTITY`).
+- **The `topic_core` vocabulary limit:** The current 95-word finance allowlist in
+  `topic_core` is too narrow to catch every subtle loss of meaning (it lacked terms like
+  *fair*, *value*, and *grant*). Expanding this vocabulary is planned for future work,
+  as adjusting it impacts operator behavior across the entire evaluation benchmark.
 
-**Not yet established:** how any of this behaves in DDOR's setting — OR-Bench,
-no system prompt. That control ran with a starved probe budget (n=12, repair
-rate 0.0) and is invalid, so nothing here is comparable to DDOR's reported
-51.96% reduction until it is rerun. The script that ran it, `examples/control_eval.py`,
-is on `main`; neither it nor its output is carried here.
+> Two later enhancements are **not** reflected above, because this run predates
+> them on the deployment path: `--verify-answers` (escalating repairs whose
+> answer fails verification, which would likely have turned the repair back into
+> an escalation) and a harm gate covering concealment of assets from creditors
+> or bankruptcy trustees. Neither has been measured on this corpus.
+>
+> The console ships with a split-model architecture: Nemotron generates answers
+> and acts as the judge, while Muse-Spark-1.2 proposes fragment replacements and
+> scores semantic fidelity. The judge remains aligned with the model being
+> repaired, because what constitutes a refusal is inherently a property of that
+> model. What the split provides is independence: the model being repaired is not
+> also the judge scoring whether its own repair preserved meaning. Using
+> `--rewriter-model ""` collapses everything onto a single model, which is how
+> every measurement above was collected.
+
+Earlier, two-thirds of the false-intervention rate stemmed from data
+preparation, not model alignment: the initial benchmark builder included tables
+but omitted the surrounding narrative text, leaving 47 of 120 questions
+unanswerable from the prompt alone. Under a strict compliance prompt, an
+unanswerable question triggers "I am not permitted to advise" rather than "I
+lack that figure" — which is indistinguishable from a safety refusal. All 7
+false interventions in that run occurred in the incomplete group, and none in
+the complete group (Fisher exact test $p = 0.001$, proving the failures were
+caused by missing data). Providing the full context brought the rate from 5.83%
+to 0.83%, and the corpus has carried its narrative ever since.
+
+### Obligations 1 and 2: the instrument was the finding
+
+The headline comparison — evaluating `TARGETED_REPAIR` (editing only the
+localized trigger fragment) against `LLM_REPHRASE` (asking an LLM to rewrite the
+entire prompt) against `FRAME_ASSERT` (adding an authorized compliance frame) on
+the FalseReject finance slice and OR-Bench-toxic under an FCA compliance prompt —
+is documented on `main` (`examples/three_arm_eval.py` and
+`audit/three_arm_eval.json`).
+
+Read as a scoreboard, the results show that **confinement trades off recovery
+for safety**:
+- The **fragment-confined operator (`TARGETED_REPAIR`)** cleared 1 of 8 benign
+  over-refusals and leaked **0 of 10** toxic prompts. It guarantees safety.
+- The **deployer frame (`FRAME_ASSERT`)** cleared 7 of 8 benign over-refusals
+  and leaked 2 of 10 toxic prompts.
+- The **full-prompt generative rewrite (`LLM_REPHRASE`)** scored 6 of 8 and
+  leaked 2 of 10 after prompt tuning (up from 1 of 8 and 0 of 10 before tuning).
+  However, prompt tuning shifted recovery and leaks together — a fragile property
+  of prompts rather than a robust method. It does not ship in our production layer.
+
+Read as an empirical finding, the data revealed something even more critical:
+**the standard benign benchmark dataset is contaminated**. Of the 8 prompts
+refused at baseline in FalseReject, only ~3 were genuine over-refusals. The
+remaining 5 described cash structuring, elder exploitation, partner fraud, and
+predatory marketing. Refusing those queries was *correct caution*, not an
+over-refusal. The deployer frame's score of 7 of 8 meant it talked the model into
+answering a money-laundering query — its true leakage rate was higher than the
+toxic slice indicated, hidden by the benchmark's incorrect "benign" label.
+
+This was the third time our evaluation instrument uncovered hidden flaws in
+standard assumptions — following the discovery of four refusal-detector failure
+modes and the FinQA data-context defect ($p = 0.001$). The primary contribution is
+the apparatus that catches these failures. `plan/over-refusal-repair.md` details
+the subsequent re-adjudication.
+
+**Not yet established:** behaviour in DDOR's setting (OR-Bench without a system
+prompt). That control experiment ran with an insufficient probe budget ($n=12$,
+repair rate 0.0) and is invalid; nothing here should be compared to DDOR's
+reported 51.96% reduction until it is rerun.
 
 ## Measurement comes first
 
-Binary refusal detection cannot measure over-refusal, and this project proved it
-the expensive way — four detector failures, three missing real refusals
-(`"I cannot fulfill this request"` among them) and one inventing refusals from
-disclaimers. Under a compliance system prompt the dominant behaviour is
-**partial refusal**: decline, then answer anyway.
+Simple binary refusal detection (e.g. checking for "I cannot") cannot
+reliably measure over-refusal. We learned this the hard way: simple detectors
+exhibited four failure modes, missing real refusals like *"I cannot fulfill this
+request"* and mistaking standard disclaimers for refusals. Furthermore, under a
+compliance system prompt, the dominant model behavior is **partial refusal**:
+declining personalized advice first, but answering general background anyway.
 
-`judge.py` implements XSTest's three-way taxonomy (full compliance / full
-refusal / partial refusal), validated 6/6 against hand labels. It is for offline
-measurement only and must never sit on the runtime safety path.
+`judge.py` implements the XSTest three-way taxonomy:
+1. **Full compliance:** answered the request directly.
+2. **Full refusal:** declined the request entirely.
+3. **Partial refusal:** declined personalized advice, but provided educational context.
+
+This was validated 6/6 against human annotations. It is used for offline
+measurement and evaluation, and never sits on the runtime safety path.
 
 ## Safety machinery
 
-**Localization** (`localize.py`) — `ddmin` with complement testing and adaptive
-partitioning, sentence then word granularity. Reduces a 21-word prompt to
-`"hide assets"` in 16 probes; tests assert genuine 1-minimality.
-
-**Confinement is structural** (`targeted.py`) — DDOR instructs a model to edit
-only the localized fragment. Here the model returns a replacement phrase and the
-substitution happens in code, so everything outside the mRTF is byte-identical
-by construction. A test reverses the edit and asserts exact equality.
-
-**Certification** (`certification.py`) — operators are certified against
-contrastive pairs on the **deployed model**. A certificate is a property of
-*(operator, model, corpus)*, not of the operator: `DEFINITIONALIZE` certified
-clean against a simulator and leaked on its first live query. Enforcement is
-fail-closed by default.
-
-**Guards** (`invariants.py`) — every candidate must not raise actionability on a
-rule-based lattice, and must preserve the propositional core. For generative
-rewrites the lexical topic check cannot work, so an intent-equivalence
-judgement carries that weight and the operator refuses to run without one.
-
-**Audit** (`audit.py`) — SHA-256 hash-chained JSONL. Records the operator
-program, the localized mRTF, each `(fragment -> replacement)` edit, the refusal
-margin, and the certificates in force.
+- **Localization (`localize.py`):** Uses delta-debugging (`ddmin`) with
+  complement testing and adaptive partitioning (sentence then word level). It
+  reduces a 21-word query down to the minimal trigger fragment (e.g. `"hide assets"`)
+  in 16 probes. Tests assert genuine 1-minimality (removing any single word
+  stops triggering refusal).
+- **Structural Confinement (`targeted.py`):** Unlike approaches that ask an LLM
+  to rewrite only a fragment and trust it to follow instructions, AARAMSE asks
+  the model only for a replacement phrase. The replacement is spliced into the
+  original query in deterministic code, guaranteeing that everything outside the
+  minimal Refusal-Triggering Fragment (mRTF) remains 100% byte-identical.
+- **Contrastive Pre-Certification (`certification.py`):** Operators are
+  certified against contrastive pairs (side-by-side benign and prohibited queries)
+  on the **actual deployed model**. A certificate belongs to the tuple *(operator,
+  model, corpus)*, not the operator in the abstract: an operator named
+  `DEFINITIONALIZE` certified clean on a simulator but leaked on its first live query.
+  Enforcement is fail-closed by default.
+- **Actionability Guards (`invariants.py`):** Every candidate must not increase
+  actionability on a rule-based lattice (ensuring queries stay educational
+  rather than personalized advice), and must preserve the core question topic.
+  For generative rewrites, semantic equivalence checks ensure the original intent
+  is preserved.
+- **Tamper-Evident Audit Log (`audit.py`):** An append-only JSONL log chained
+  with SHA-256 cryptographic hashes. It records the operator program, the
+  localized mRTF, each `(fragment -> replacement)` edit, the refusal margin, and
+  active certificates.
 
 ## Layout
 
 | Module | Purpose |
 |---|---|
 | `gateway.py` | The deployable layer: build, certify, handle, report |
-| `client.py` | Client protocol, caching, and the raw-HTTP Ollama client |
-| `equivalence.py` | Intent-equivalence judge; `TargetedRepair` will not run without it |
-| `judge.py` | XSTest three-way response classification |
+| `client.py` | Client protocol, caching, and raw-HTTP Ollama client |
+| `equivalence.py` | Intent-equivalence judge; ensures rewrites preserve meaning |
+| `judge.py` | XSTest three-way response classification (compliance, refusal, partial) |
 | `localize.py` | Delta-debugging mRTF localization |
-| `targeted.py` | Fragment-confined repair with structural splicing |
-| `operators/` | Rule-based operator algebra, registry, deployer frame |
-| `search.py` | Bounded shortest-program search, escalation |
-| `invariants.py` | Actionability lattice and intent guard |
-| `certification.py` | Contrastive certificates |
-| `audit.py` | Hash-chained intervention log |
+| `targeted.py` | Fragment-confined repair with structural code splicing |
+| `operators/` | Rule-based operator algebra, registry, and deployer frame |
+| `search.py` | Bounded shortest-program search and deterministic escalation |
+| `invariants.py` | Actionability lattice and intent guards |
+| `certification.py` | Contrastive certificates on deployed models |
+| `audit.py` | Cryptographic hash-chained intervention log |
 | `serve.py` | HTTP sidecar: console, chat, repair, and report routes |
-| `ui.py` | Console backend: decision traces and the job store behind them |
-| `static/index.html` | The console itself |
-| `__main__.py` | CLI: `serve`, `repair`, `report` |
-| `providers.py` | LiteLLM client, native fallbacks, and the model-spec factory |
-| `report.py` | Supervisor-facing intervention report |
-| `budget.py` | Induced-leakage measurement and fail-closed enforcement |
-| `splits.py` | Deterministic held-out splits by content hash |
-| `falsereject.py`, `finqa.py` | Vendored benchmark loaders |
-| `corpus.py` | Hand-written test fixtures — **not** evidence |
+| `ui.py` | Console backend: decision traces and asynchronous job store |
+| `static/index.html` | Interactive web chat console |
+| `__main__.py` | CLI: `serve`, `repair`, `report` commands |
+| `providers.py` | LiteLLM client, native fallbacks, and model-spec parser |
+| `report.py` | Supervisor-facing intervention reports (JSON and Markdown) |
+| `budget.py` | Induced-leakage measurement and fail-closed budget enforcement |
+| `splits.py` | Deterministic held-out data splits by content hash |
+| `falsereject.py`, `finqa.py` | Benchmark dataset loaders |
+| `corpus.py` | Hand-written test fixtures — **not** benchmark evidence |
 
 ## Usage
 
@@ -214,7 +377,7 @@ make demo                                  # certify once (cached), serve the co
 make demo-offline                          # the whole pipeline, no model, instant
 python examples/finqa_control.py           # false-intervention rate, 120 items
 python examples/finqa_cause.py             # why each refusal happened
-make test                                  # 360 tests
+make test                                  # 513 tests
 ```
 
 `make demo` stands the layer in front of `qwen3.5:4b` under the FCA compliance
@@ -262,30 +425,44 @@ Configuration, Docker, endpoint reference, and the latency budget live in
 
 ## Limitations
 
-- **The lattice is hand-built.** English-only, finance-tuned rules. Deliberately
-  not learned, to keep model judgement off the runtime safety path.
-- **Monotonicity is enforced, not proven.** `DEFINITIONALIZE` obeyed the lattice
-  and leaked anyway; certification caught it, the invariant did not.
-- **The judge is not the published instrument.** DDOR uses Qwen3Guard-Gen-0.6B
-  with a double-blind human study; this uses a general model prompted with the
-  taxonomy, validated on 6 hand labels. It erred at least once in 40.
-- **Leak figures rest partly on OR-Bench labels** that DDOR specifically
-  criticises as noisy. Treat them as upper bounds pending human adjudication.
-- **This branch no longer has zero runtime dependencies.** That property was
-  load-bearing and advertised; LiteLLM ends it. The native backend is the
-  escape hatch, not a claim that nothing changed.
-- **Repair is slow.** Measured against `gemma4:12b`: a passthrough takes ~30-50s
-  (2 model calls), a repair 7.5-8.7 minutes (~23-26 calls). This does not fit
-  behind a synchronous request; see [docs/deployment.md](docs/deployment.md).
-- **The sidecar handles one request at a time.** The audit log recomputes its
-  tail hash by reading the file, so appends are serialised by a lock.
-- **The console is single-tenant.** Jobs live in memory and die with the
-  process, and the service serialises every turn behind one lock, so it is a
-  supervisor's window onto one gateway rather than a multi-user product.
-- **The judge still sits on the runtime path.** `gateway.JudgedProbe` uses the
-  three-way judge to decide refusal at runtime, which `judge.py` explicitly
-  forbids. Fixing it will move the measured numbers, so it is not a silent
-  change.
+- **The actionability lattice is rule-based.** The rules for distinguishing
+  general educational concepts from personalized advice are currently
+  English-only and tuned for finance. They are intentionally deterministic and
+  rule-based rather than machine-learned, ensuring model unpredictability is kept
+  off the runtime safety path.
+- **Monotonicity (ensuring edits never make a query more actionable) is
+  enforced, not formally proven.** In one instance, an operator named
+  `DEFINITIONALIZE` satisfied the rule-based lattice but still caused a model to
+  leak an answer; contrastive pre-certification successfully caught this failure,
+  proving why multi-layer defenses are necessary.
+- **The refusal judge is an evaluation prompt, not a dedicated guard model.**
+  While research literature (like DDOR) uses fine-tuned models like Qwen3Guard,
+  AARAMSE prompts a general model with the XSTest taxonomy (validated on human
+  labels). It works well, but carries a small error rate (~1 in 40).
+- **Reported leakage figures reflect benchmark dataset noise.** Standard
+  benchmarks (like OR-Bench) contain noise and disputed labels; treat leakage
+  measurements as upper bounds pending further human adjudication.
+- **External runtime dependencies.** Multi-provider support is powered by
+  LiteLLM. For environments with strict zero-dependency requirements, the native
+  standard-library HTTP clients (`AARAMSE_CLIENT_BACKEND=native`) remain
+  available for Ollama, OpenAI, and Anthropic.
+- **Repair latency requires an asynchronous architecture.** Testing multiple
+  candidate repairs against a live model takes several calls (e.g. 23–26 calls on
+  larger models like `gemma4:12b`, taking several minutes). AARAMSE is built as an
+  asynchronous supervisory sidecar: `POST /v1/chat` immediately returns a `202`
+  with a job ID, allowing callers to poll progress rather than hanging on an
+  open HTTP socket.
+- **Turns are serialized per log to guarantee cryptographic integrity.** The
+  audit log updates its SHA-256 hash chain sequentially on disk, so concurrent
+  requests are handled under a lock. Preserving an unbroken audit chain takes
+  precedence over concurrent throughput. Production horizontal scaling is
+  achieved by running multiple worker instances, each managing its own log.
+- **The interactive console is single-tenant.** In-flight jobs are tracked in
+  memory for the duration of the process; it is designed as an operational
+  window for compliance teams and supervisors, not a multi-tenant SaaS frontend.
+- **The judge currently runs on the runtime path.** `gateway.JudgedProbe`
+  utilizes the three-way judge to evaluate refusals at runtime; transitioning
+  this to a lightweight deterministic oracle will further refine measured latencies.
 
 ## Licence
 

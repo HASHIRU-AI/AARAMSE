@@ -1,16 +1,22 @@
-"""Delta-debugging localization of the minimal Refusal-Triggering Fragment.
+"""Delta-debugging localization of the minimal Refusal-Triggering Fragment (mRTF).
 
-This is the step the project skipped. Following Zhou et al. (DDOR), a refused
-prompt is reduced to a 1-minimal fragment whose presence alone still triggers
-refusal, and repair then edits *only* that fragment. DDOR reports 51.96%
-over-refusal reduction on OR-Bench and 86.41% on XSTest with this pipeline, and
-measures full-prompt rewriting -- what this project built first -- as a baseline
-that repairs slightly more but loses 7.01% semantic similarity by replacing
-benign content along with the trigger.
+When a model refuses a prompt, this module isolates the exact subphrase that caused
+the refusal, allowing repairs to target only those words while leaving the rest of
+the query untouched.
 
-Definition (1-minimal refusal-triggering fragment). For a prompt split into
-fragments P = {f1..fn}, S is an mRTF when concat(S) still triggers refusal and
-removing any single unit of S stops it.
+Following the DDOR framework (Zhou et al.), the prompt is analyzed using delta
+debugging (`ddmin`) — an algorithmic search that systematically tests subsets of the
+input against the model's refusal boundary.
+
+### Key definitions:
+
+* **Minimal Refusal-Triggering Fragment (mRTF):** The smallest subset of words from
+  the user prompt whose presence alone causes the model to refuse.
+* **1-minimality:** A guarantee that the isolated fragment cannot be reduced any
+  further; removing even a single word from the mRTF causes the refusal to stop.
+
+By isolating the exact trigger phrase, the repair stage avoids rewriting the entire
+query, ensuring the user's harmless context and wording remain 100% byte-identical.
 """
 
 from __future__ import annotations

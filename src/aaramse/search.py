@@ -1,16 +1,44 @@
-"""Bounded shortest-program search: repair cost as the regulatory signal.
+"""The repair agent: bounded planning over a closed operator algebra.
 
-Breadth-first search over operator programs returns the *shortest* program that
-clears the refusal. Its length is the refusal margin, a calibrated scalar that
-separates the two cases a supervisor cares about:
+This is the agentic core of the AARAMSE layer. When a deployed model refuses a
+harmless customer query, this agent plans a repair, executes it against the live
+model, verifies the resulting answer, and escalates to a human reviewer when it
+cannot safely succeed.
 
-* margin 0            -- no over-refusal occurred
-* margin small (1-2)  -- pragmatic over-refusal, repaired and logged
-* search exhausted    -- the refusal survived full generalization, so it was
-                         content-driven and correct; the query escalates
+A breadth-first search over operator programs (sequences of pre-approved rewrite
+actions) returns the *shortest* program that clears the refusal. The length of
+this program is the **refusal margin** — a concrete metric that distinguishes the
+cases a compliance supervisor cares about:
 
-Escalation is the point. The layer never "tries harder": depth k and the closed
-operator set cap its total optimization power at |O|^k enumerable candidates.
+* **Margin 0:** No over-refusal occurred; the question passed through untouched.
+* **Margin small (1–2):** A minor over-refusal occurred; it was safely repaired,
+  verified, and logged.
+* **Search exhausted:** The refusal persisted even after applying all permitted
+  generalizations. The refusal was content-driven and correct, so the query
+  escalates to human review.
+
+## Bounded autonomy
+
+Unlike conventional agents that rely on subjective stopping heuristics (where the
+model decides when it has "done enough"), this agent's search space is strictly
+governed by **arithmetic**.
+
+Search depth `k` over a **closed operator algebra** (a fixed set of allowed rewrite
+operations `O`) mathematically caps the candidates the agent can ever consider at
+`search_space_size(|O|, k)`. Live model interactions are independently capped by
+`max_oracle_calls`. An agent with a hard-coded budget cannot be prompted or
+manipulated into an open-ended search.
+
+Escalation is the primary safety mechanism, and it triggers deterministically:
+when the operator set is exhausted, or when a candidate elicits step-by-step
+procedural guidance (`abort_on_content_delivery`). The layer never blindly "tries
+harder" — stopping immediately upon detecting procedural assistance prevents the
+iterative jailbreak loops common in unconstrained rewriting.
+
+Every action the agent takes — the program executed, the fragment edited, the
+margin incurred, and active certificates — is committed to the SHA-256 hash-chained
+audit log, ensuring that every autonomous decision remains verifiable and
+tamper-evident.
 """
 
 from __future__ import annotations

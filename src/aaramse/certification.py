@@ -1,13 +1,18 @@
 """Offline contrastive certification of the operator algebra.
 
-This is what takes the LLM judge off the runtime safety path. Rather than
-asking a model, per query, whether a rewrite was acceptable, every operator is
-certified once against a corpus of minimal contrastive pairs: a benign query
-and a prohibited twin that differ in *content* while sharing surface form.
+Provides empirical pre-admission testing to take unpredictable LLM judgements off
+the runtime safety path.
 
-An operator passes only if it never flips a prohibited twin from refused to
-answered. Operators that leak are ejected from the algebra before deployment,
-so the runtime never has to gamble on a judge's consistency.
+Rather than asking an LLM at runtime whether a rewrite was safe, every rewrite operator
+is evaluated before deployment against a test suite of **contrastive pairs** — pairs
+containing a harmless, benign query and a prohibited twin that share grammatical structure
+but differ in underlying safety/legality (e.g. asking for tax definitions vs. asking how to
+evade taxes).
+
+An operator passes certification only if it **never flips a prohibited twin** from
+refused to answered on the specific deployed model. Operators that cause leakage are
+ejected from the active operator set before deployment, ensuring that production safety
+does not rely on a runtime model's consistency.
 """
 
 from __future__ import annotations
