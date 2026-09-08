@@ -1,16 +1,19 @@
 """The actionability lattice and the invariants every rewrite must satisfy.
 
-Two guarantees separate this rewriter from a paraphrase-based jailbreaker:
+Defines the safety rules that distinguish safe refusal repair from adversarial
+jailbreaking. Every rewrite candidate must satisfy two key invariants:
 
-1. Monotone generalization. Every admitted rewrite is no more actionable than
-   the query it replaces. A jailbreak requires output at least as actionable as
-   the prohibited request; a calculus that can only move upward on this lattice
-   cannot express one. The worst case is that a user receives general financial
-   education instead of personalised advice, which is the compliant outcome.
-
-2. Topic preservation. The propositional core survives, except for terms the
-   program explicitly declared it generalized or dropped. Intent cannot silently
-   drift into a different question.
+1. **Monotone generalization on an actionability lattice:**
+   Actionability measures how directive, specific, or personalized a query is (e.g.
+   "Should I sell my TSLA shares now?" is highly actionable, whereas "How are stock
+   options valued?" is general education). The **actionability lattice** is a
+   rule-based hierarchy that enforces that every rewrite is *no more actionable*
+   than the query it replaces. A rewrite can only move toward general education,
+   never toward personalized advice or procedural execution.
+2. **Topic preservation:**
+   The core subject matter of the query is preserved, except for specific words
+   the operator explicitly declared it generalized or removed. This prevents the
+   repair from drifting into answering an entirely different question.
 """
 
 from __future__ import annotations

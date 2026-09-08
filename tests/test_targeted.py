@@ -703,3 +703,49 @@ def test_deleting_an_urgency_marker_repairs_the_query():
     assert result.decision is Decision.REPAIRED
     assert result.program.names == ("TARGETED_REPAIR",)
     assert "urgently" not in result.rewritten.lower()
+
+
+class TestMalformedReplacements:
+    """A replacement has to be a phrase a person could have typed.
+
+    Found on the FinQA control slice, `ABMD/2007/page_78.pdf-2`. The mRTF
+    localized to "fair for" and the rewriter proposed `fair -> market*valuation`,
+    turning "grant-date fair value for options" into "grant-date
+    market*valuation value during options". Every guard passed it: it was
+    shorter than the cap, it lowered no actionability (both profiles scored 0),
+    and `MeaningFidelity` scored it 1.0 with no lost terms -- because
+    `topic_core` reduces that question to the single token {"options"} and the
+    rewrite happened to *gain* "valuation". The model then stopped refusing,
+    since the question had stopped being a question. Confinement held
+    perfectly; what it confined was gibberish.
+    """
+
+    MALFORMED = (
+        "market*valuation",
+        "market|valuation",
+        "market`valuation`",
+        "market_valuation_thing",
+        "market <valuation>",
+        "market{valuation}",
+    )
+
+    def test_markup_characters_are_rejected(self):
+        """Asterisks and friends are rewriter artifacts, not English."""
+        for replacement in self.MALFORMED:
+            op = build(replacement=replacement)
+            assert op.apply(PROMPT) is None, f"admitted {replacement!r}"
+            assert any(
+                "not a well-formed phrase" in reason for _, reason in op.rejected
+            ), f"wrong rejection reason for {replacement!r}: {op.rejected}"
+
+    def test_ordinary_phrases_still_pass(self):
+        """The guard must not reject replacements that are simply words."""
+        for replacement in (
+            "protect assets lawfully",
+            "safeguard assets",
+            "asset-protection planning",
+            "restructure holdings (lawfully)",
+            "shield assets, lawfully",
+        ):
+            op = build(replacement=replacement)
+            assert op.apply(PROMPT) is not None, f"rejected {replacement!r}"

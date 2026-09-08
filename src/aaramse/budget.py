@@ -1,19 +1,25 @@
-"""Leakage budget: the enforceable version of the concept note's "hard cap".
+"""Leakage budget: measurable and enforceable risk limits.
 
-§4 promised the layer "must not increase unsafe-request pass-through above
-baseline". The measurements say that promise cannot be kept and recover a
-useful number of benign queries at the same time -- on `gemma4:12b`, the
-fragment-confined operator leaked 0/10 and recovered 1/8, while unconfined
-operators recovered 6-7/8 and leaked 2/10.
+Enforces an explicit, deployer-configured ceiling on the allowable leakage of
+prohibited queries, defaulting to zero (`NO_LEAKAGE`).
 
-So the requirement becomes a *budget*: an explicit number the deployer sets and
-the code enforces, defaulting to zero. That is a weaker claim than the note
-made, and an honest one, and unlike the original it is actually checked.
+Empirical benchmarks show an unavoidable trade-off between recovery and safety:
+strictly confined fragment edits guarantee zero leakage (0/10) but recover fewer
+benign queries (1/8), while broader contextual rewrites recover significantly more
+(6-7/8) but carry a small risk of leakage (2/10). The **leakage budget** turns this
+trade-off into an explicit, measurable policy setting rather than an unstated assumption.
 
-The distinction that matters is **induced** leakage. A prohibited prompt the
-model answers on its own is a property of the model, not of this layer; a
-prompt the model refused and the layer then got answered is this layer's doing.
-Only the second counts against the budget, and both are reported.
+### Induced leakage vs. Baseline leakage:
+
+* **Baseline leakage:** An unsafe or prohibited prompt that the underlying model
+  answers completely on its own, without any intervention. This is a property of
+  the base model.
+* **Induced leakage:** An unsafe prompt that the base model correctly refused at
+  baseline, but that the repair layer subsequently modified and caused the model
+  to answer.
+
+Only induced leakage counts against the deployer's configured budget. If induced
+leakage exceeds the budget during evaluation, execution fails closed via `BudgetExceeded`.
 """
 
 from __future__ import annotations

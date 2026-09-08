@@ -1,21 +1,29 @@
-"""HTTP surface: the drop-in sidecar the concept note promises.
+"""HTTP surface: the drop-in supervisory sidecar.
 
-The gateway was a Python class you had to import, which is not something a
-deployed agent can sit behind. This wraps it in a stdlib HTTP server so the
-layer can front any agent that can make a request, in any language.
+Provides a standard-library HTTP server in front of the Gateway, allowing any
+deployed agent or application — in any programming language — to interact with
+AARAMSE over standard REST endpoints.
 
-Routing is a pure function (`dispatch`) and the handler is a thin shell over
-it, so the routing table is tested without binding a socket.
+Routing is implemented as a pure function (`dispatch`), making the HTTP routing
+table unit-testable without binding network sockets.
 
-Two deliberate constraints:
+## Key architectural constraints:
 
-* **One request at a time.** `RepairSearch` and `AuditLog` share mutable state,
-  and the log recomputes its tail hash by reading the file, so concurrent
-  appends would interleave and break the chain. A lock serialises handling.
-  Throughput is not the point of this layer; an unbroken chain is.
-* **Fail closed on auth.** If a token is configured, a request without it is
-  refused. If none is configured the server says so loudly at startup rather
-  than pretending to be protected.
+* **One request at a time per log (sequential cryptographic chaining):**
+  `RepairSearch` and `AuditLog` update shared state, and the audit log extends
+  its cryptographic SHA-256 hash chain sequentially on disk. Handling requests
+  under a lock ensures no interleaved writes break the chain. For high-volume
+  deployments, scaling is horizontal: run multiple worker gateways, each managing
+  its own independent log file.
+* **Repairs are asynchronous jobs, not blocking calls:**
+  Testing multiple candidate repairs against a live model takes several model calls.
+  `POST /v1/chat` immediately returns a `202 Accepted` status with a job ID, and
+  the caller polls `/v1/chat/{id}` for status. This prevents open HTTP connections
+  from timing out during longer repairs.
+* **Fail-closed authentication:**
+  If an API token (`AARAMSE_API_TOKEN`) is configured, incoming requests without a
+  matching Bearer token are rejected immediately. If no token is set, the server
+  warns clearly in startup logs rather than giving a false impression of security.
 """
 
 from __future__ import annotations

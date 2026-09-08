@@ -1,17 +1,18 @@
-"""Console backend: turn one repair into something a supervisor can read.
+"""Console backend: transforms repair decisions into inspectable compliance traces.
 
-The HTTP sidecar answers `/v1/repair` with a decision and a string, which is the
-right shape for an agent forwarding traffic and the wrong shape for a person
-deciding whether to trust the layer. This module adds the two things a reader
-needs and the machine did not: the evidence behind the decision, and a way to
-wait for it.
+Provides the backend logic for the interactive web console. While automated agents
+only need a simple rewritten string, compliance supervisors need full transparency
+into the evidence behind every decision.
 
-**Waiting is the hard part.** A repair against a real model runs 23-26 model
-calls and can take minutes, which does not fit behind a synchronous request. So
-a chat turn is a job: `start` returns immediately, the work runs on a thread,
-and the caller polls. Elapsed time and the running model-call count are exposed
-while it works, because a progress bar that cannot say what it is doing is worse
-than a number that can.
+### Key capabilities:
+
+* **Asynchronous job store:** Because evaluating multiple repair candidates against a
+  live model requires several calls and can take up to a few minutes, chat interactions
+  are executed as asynchronous background jobs. The console returns immediately and
+  polls progress, exposing elapsed runtime and live model-call counts.
+* **Inspectable decision traces:** Formats the underlying evidence for every turn —
+  including the operator program, actionability profiles, baseline vs. repaired queries,
+  and cryptographic hash checks — into a human-readable interface.
 """
 
 from __future__ import annotations

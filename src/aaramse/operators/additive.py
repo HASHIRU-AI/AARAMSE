@@ -1,13 +1,17 @@
-"""Additive operators: supply deployer context without touching the question.
+"""Additive operators: supply authorized compliance context without altering the query.
 
-Some over-refusals are triggered by the topic itself rather than by how the
-question is phrased. "What is the legal definition of tax-loss harvesting?"
-carries no pragmatic feature left to strip, so subtraction cannot help it.
+Some over-refusals are triggered by financial keywords themselves rather than by
+how the user phrased the question. For example, "What is the legal definition of
+tax-loss harvesting?" contains no unnecessary words to remove.
 
-The honest repair is to supply the regulatory context the guardrail lacked.
-Frame text is drawn only from deployer configuration and never from the query,
-which is what stops this operator class from becoming a prompt-injection
-surface: a user cannot influence a single token of what gets prepended.
+The appropriate fix is to provide the model with the authorized regulatory context
+it was missing. The **deployer frame** prepends an explicit statement establishing
+that the response is permitted general financial education under the firm's regulatory
+authorization.
+
+Security note: Frame text is generated exclusively from deployer configuration
+(`deployer_name` and `authorisation_ref`), never from the user's prompt. This prevents
+the operator from becoming a prompt-injection attack vector.
 """
 
 from __future__ import annotations

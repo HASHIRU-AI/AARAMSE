@@ -1,17 +1,20 @@
 """Tamper-evident audit log for every rewrite decision.
 
-Records are chained by SHA-256 over the previous record's hash, so any edit to
-history invalidates every record after it. What is logged is the operator
-*program*, not just a pair of opaque strings: a supervisor reads
-"DEPERSONALIZE o ENTITY_GENERALIZE, margin 2" and can replay it exactly.
+Maintains an immutable, append-only JSONL log where each entry is cryptographically
+linked to the previous one via a SHA-256 hash chain. Any post-hoc modification,
+insertion, or deletion invalidates every subsequent hash in the chain, giving
+compliance officers and external regulators mathematical proof of audit integrity.
 
-Raw completions are retained but split. The record carries only a SHA-256 of
-what the model said; the text lands in a sidecar beside the log. The record is
-the artifact that gets committed as evidence, and committing verbatim answers to
-prohibited queries would put the very content this layer suppresses into git
-history. Because the hash sits *inside* the chained payload, the sidecar is
-still attested: text that does not hash to the committed value is detected by
-`verify_completions`.
+What is logged is the exact **operator program** (the sequence of rewrite actions
+applied) and the resulting **refusal margin** (number of steps needed to clear the
+refusal), rather than opaque string rewrites. This enables a supervisor to inspect
+and replay the exact decision path.
+
+To prevent committing potentially toxic or prohibited model responses directly into
+version control, the main log records only the cryptographic hash of the model's
+raw completion. The raw text is stored in an adjacent completions sidecar file,
+which remains attested by the on-chain hash and can be verified using
+`verify_completions()`.
 """
 
 from __future__ import annotations

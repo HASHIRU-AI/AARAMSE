@@ -17,35 +17,50 @@ repairs the refusal. Mechanically, that is a system for getting a model to
 answer something it declined to answer. The distance between that and a
 jailbreak primitive is not the mechanism; it is the controls around it.
 
-Those controls are: only queries the deployed model actually refuses are
-eligible; only operators holding a passing certificate on that model may run;
-edits are structurally confined to the localized fragment; candidates that
-raise actionability are rejected; anything unresolved escalates to a human; and
-every decision is written to a hash-chained log.
+Those safety controls are:
+- **Refusal-only entry:** Only queries the deployed model actually refused are
+  eligible for repair; normal questions pass through untouched.
+- **Pre-admission certification:** Only rewrite operators holding a verified
+  passing certificate on that specific model may run.
+- **Structural confinement:** Edits are strictly confined to the localized
+  trigger fragment in deterministic code, keeping the rest of the question
+  byte-identical.
+- **Actionability limits:** Candidate rewrites that increase actionability
+  (e.g., asking for specific, personalized advice rather than educational
+  context) are rejected.
+- **Deterministic escalation:** Any unresolved or potentially harmful query
+  immediately escalates to a human reviewer.
+- **Tamper-evident audit trail:** Every decision and edit is written to an
+  append-only, cryptographically hash-chained log. Each record carries its
+  predecessor's SHA-256, so a record cannot be altered after the fact and leave
+  the rest of the chain intact.
 
 ## Intended use
 
 - Restoring access to lawful financial, legal, and medical information that a
   safety-aligned model wrongly declines.
-- Research on over-refusal, its measurement, and its repair.
-- Regulatory and compliance review of a deployed agent's refusal behaviour.
+- Empirical research on over-refusal in LLMs, its measurement, and safe repair.
+- Regulatory compliance and supervisory review of a deployed agent's refusal
+  behaviour.
 
 ## Uses we ask you not to make of it
 
-- **Removing a refusal that is correct.** Repairing a refusal of a genuinely
-  prohibited request is the failure mode this project exists to avoid, not an
-  application of it.
-- **Running with `require_certificates=False` in production.** The flag exists
-  for research on the uncertified algebra. An uncertified operator is one whose
-  behaviour on the deployed model is unmeasured.
-- **Raising the leakage budget without recording the decision.** The budget is
-  a deployer's explicit statement of accepted risk. Raising it silently
-  converts a stated risk into a hidden one.
-- **Detaching the audit log.** A repair nobody can review is the thing the
-  regulator was worried about in the first place.
+- **Bypassing legitimate safety refusals.** Repairing a refusal for a genuinely
+  harmful or illegal request is the critical failure mode this project exists
+  to prevent, not an application of it.
+- **Disabling certification in production (`require_certificates=False`).**
+  This flag exists solely for offline research on uncertified operators. In
+  production, running uncertified operators means their safety on the deployed
+  model has not been verified.
+- **Raising the leakage budget without an audited decision.** The leakage
+  budget is a deployer's explicit, measurable limit on accepted risk. Raising it
+  silently turns a stated policy limit into a hidden vulnerability.
+- **Disabling or bypassing the audit log.** A repair that cannot be
+  cryptographically verified destroys the accountability that supervisors and
+  regulators require.
 - **Presenting repaired output as the model's unprompted answer.** The user
-  asked one question; the model was asked another. The log records both, and
-  downstream disclosures should reflect that.
+  asked one question; the model answered a repaired formulation. The audit log
+  records both, and downstream user disclosures should reflect that.
 
 ## If you find a way to misuse it
 

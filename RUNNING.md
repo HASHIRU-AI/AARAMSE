@@ -52,8 +52,8 @@ pip install -e ".[dev]"          # or: pip install -r requirements-dev.txt
 PYTHONPATH=src python3 -m pytest -q        # or: make test
 ```
 
-Expected: **360 passed** in well under a second. No network, no model, no
-fixtures to download.
+Expected: **511 passed** in about 1.5 seconds. Runs entirely offline: no network
+access, no live model, and no external fixtures to download.
 
 Narrow it down while working:
 

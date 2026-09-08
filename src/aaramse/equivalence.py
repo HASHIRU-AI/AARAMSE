@@ -1,13 +1,14 @@
 """Intent-equivalence judging for candidate rewrites.
 
-A rewrite is admissible only if it still asks for the same information. This
-module is the one place that decides that, and `TargetedRepair` refuses to run
-without it.
+Verifies that a candidate rewrite still fulfills the user's original information need.
+`TargetedRepair` requires this check before admitting any proposed rewrite.
 
-This replaces the embedding cosine threshold in the original design. Cosine
-similarity is high for any two sentences about the same topic, including ones
-asking materially different things, which is how `DEFINITIONALIZE` turned a
-how-to into a definition request without tripping any check.
+Why intent equivalence replaces cosine embedding similarity:
+Embedding cosine distance often registers high similarity scores between any two
+sentences discussing the same general topic (e.g., scoring high between "How do I evade taxes?"
+and "What is the tax code?"), failing to detect material shifts in intent. Intent-equivalence
+directly verifies whether answering the rewritten query provides the information the user
+originally sought.
 """
 
 from __future__ import annotations
